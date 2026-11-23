@@ -45,6 +45,8 @@ public:
     Q_INVOKABLE void restoreAllWorkAreas();
     void setFullscreenMonitors(const QSet<quintptr>& monitors);
     bool isMonitorFullscreen(HMONITOR hmon) const;
+    void setEditModeSuspended(bool suspended);
+    bool isEditModeSuspended() const { return m_editModeSuspended; }
 
     bool nativeEventFilter(const QByteArray& eventType, void* message, qintptr* result) override;
 
@@ -77,6 +79,7 @@ private:
     UINT m_nextCallbackMsg = WM_APP + 200;
     bool m_inApplyReservation = false;
     bool m_taskbarHiddenMode = true;
+    bool m_editModeSuspended = false;
 };
 
 } // namespace SekaiPop::Win32

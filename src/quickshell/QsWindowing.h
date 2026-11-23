@@ -661,6 +661,7 @@ private:
     bool m_editModeActive = false;
     bool m_uiReadyEmitted = false;
     bool m_wallpaperSeen = false;
+    bool m_focusConnected = false;
 };
 
 } // namespace SekaiPop::Quickshell

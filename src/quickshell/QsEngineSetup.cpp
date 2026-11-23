@@ -267,7 +267,7 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
     ensureDirJunction(stageQsDir + QStringLiteral("/shaders"), exeDir + QStringLiteral("/shaders"));
 
     // Fast fingerprint check to avoid re-reading 540+ QML files on every startup.
-    static constexpr const char* kStageVersion = "v37-win-fast-edit-desktop-lean";
+    static constexpr const char* kStageVersion = "v39-win-edit-glitch-zorder-bar-fix";
     QElapsedTimer stageTimer;
     stageTimer.start();
 
@@ -434,16 +434,13 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                 }
 
                 // Allow EditMode.open() on Windows even when desktop apps are open,
-                // use compact bounding-box desktop widget windows at rest, and let
-                // window resizing/instantiation settle for 2 frames before enterAnim starts.
+                // keep full-screen widget windows by default (respecting perf.lowEnd so
+                // widgets never resize/jump/stretch swapchains on Edit Desktop enter/exit),
+                // and let EditTray/restack settle for 1 frame before enterAnim starts.
                 if (fi.fileName() == QStringLiteral("EditMode.qml")) {
                     text.replace(
                         QStringLiteral("if (root.appsOn(name)) {"),
                         QStringLiteral("if (false && root.appsOn(name)) {")
-                    );
-                    text.replace(
-                        QStringLiteral("property var compactOverride: undefined"),
-                        QStringLiteral("property var compactOverride: true")
                     );
                     text.replace(
                         QStringLiteral("        exitAnim.stop()\n        enterAnim.restart()"),
@@ -457,7 +454,7 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                         QStringLiteral("    NumberAnimation {\n        id: enterAnim"),
                         QStringLiteral("    Timer {\n"
                                        "        id: enterPrep\n"
-                                       "        interval: 48\n"
+                                       "        interval: 16\n"
                                        "        onTriggered: {\n"
                                        "            if (root.active)\n"
                                        "                enterAnim.restart()\n"
@@ -562,7 +559,8 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                             "                id: barEditor\n"
                             "                property bool loaded: false\n"
                             "                active: loaded || win.tab === \"bar\"\n"
-                            "                onActiveChanged: if (active) loaded = true\n"
+                            "                Component.onCompleted: if (win.tab === \"bar\") loaded = true\n"
+                            "                Connections { target: win; function onTabChanged() { if (win.tab === \"bar\") barEditor.loaded = true } }\n"
                             "                visible: win.tab === \"bar\"\n"
                             "                source: active ? Qt.resolvedUrl(\"EditBarLayout.qml\") : \"\"\n"
                             "                anchors.left: tabs.right\n"
@@ -576,9 +574,11 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                             "            }\n"
                             "\n"
                             "            Loader {\n"
+                            "                id: dockEditor\n"
                             "                property bool loaded: false\n"
                             "                active: loaded || win.tab === \"dock\"\n"
-                            "                onActiveChanged: if (active) loaded = true\n"
+                            "                Component.onCompleted: if (win.tab === \"dock\") loaded = true\n"
+                            "                Connections { target: win; function onTabChanged() { if (win.tab === \"dock\") dockEditor.loaded = true } }\n"
                             "                visible: win.tab === \"dock\"\n"
                             "                source: active ? Qt.resolvedUrl(\"EditDockBoard.qml\") : \"\"\n"
                             "                anchors.left: tabs.right\n"
@@ -592,9 +592,11 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                             "            }\n"
                             "\n"
                             "            Loader {\n"
+                            "                id: viewsEditor\n"
                             "                property bool loaded: false\n"
                             "                active: loaded || win.tab === \"views\"\n"
-                            "                onActiveChanged: if (active) loaded = true\n"
+                            "                Component.onCompleted: if (win.tab === \"views\") loaded = true\n"
+                            "                Connections { target: win; function onTabChanged() { if (win.tab === \"views\") viewsEditor.loaded = true } }\n"
                             "                visible: win.tab === \"views\"\n"
                             "                source: active ? Qt.resolvedUrl(\"EditViewsBoard.qml\") : \"\"\n"
                             "                anchors.left: tabs.right\n"
@@ -611,7 +613,8 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                             "                id: themeBoard\n"
                             "                property bool loaded: false\n"
                             "                active: loaded || win.tab === \"theme\"\n"
-                            "                onActiveChanged: if (active) loaded = true\n"
+                            "                Component.onCompleted: if (win.tab === \"theme\") loaded = true\n"
+                            "                Connections { target: win; function onTabChanged() { if (win.tab === \"theme\") themeBoard.loaded = true } }\n"
                             "                visible: win.tab === \"theme\"\n"
                             "                property bool tuning: false\n"
                             "                onTuningChanged: if (item && item.tuning !== tuning) item.tuning = tuning\n"
@@ -636,7 +639,8 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                             "                id: presetBoard\n"
                             "                property bool loaded: false\n"
                             "                active: loaded || win.tab === \"presets\"\n"
-                            "                onActiveChanged: if (active) loaded = true\n"
+                            "                Component.onCompleted: if (win.tab === \"presets\") loaded = true\n"
+                            "                Connections { target: win; function onTabChanged() { if (win.tab === \"presets\") presetBoard.loaded = true } }\n"
                             "                visible: win.tab === \"presets\"\n"
                             "                source: active ? Qt.resolvedUrl(\"EditPresetBoard.qml\") : \"\"\n"
                             "                anchors.left: tabs.right\n"
@@ -1682,7 +1686,8 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                     text.replace(
                         QStringLiteral("    DesktopMenu {}\n    EditTray {}\n    // A widget pulled up off the shelf follows the pointer in a window of its own.\n    EditDragGhost {}"),
                         QStringLiteral("    LazyLoader { active: EditMode.menuOpen; source: Qt.resolvedUrl(\"modules/sekai/desktopMenu/DesktopMenu.qml\") }\n"
-                                       "    LazyLoader { property bool warmed: false; active: warmed || EditMode.screenName !== \"\"; onActiveChanged: if (active) warmed = true; source: Qt.resolvedUrl(\"modules/sekai/editMode/EditTray.qml\") }\n"
+                                       "    LazyLoader { id: editTrayLoader; property bool warmed: false; active: warmed || EditMode.screenName !== \"\"; source: Qt.resolvedUrl(\"modules/sekai/editMode/EditTray.qml\") }\n"
+                                       "    Connections { target: EditMode; function onScreenNameChanged() { if (EditMode.screenName !== \"\") editTrayLoader.warmed = true } }\n"
                                        "    LazyLoader { active: EditMode.dragId !== \"\"; source: Qt.resolvedUrl(\"modules/sekai/editMode/EditDragGhost.qml\") }")
                     );
                     text.replace(
@@ -2385,13 +2390,9 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                 }
 
                 if (fi.fileName() == QStringLiteral("Bar.qml")) {
-                    // On Windows, bottom/right QsPanelWindow resizing has no Wayland surface-origin jump,
-                    // so allow compactWindow on all 4 edges. Shrinks right/bottom bars from full-screen
-                    // 1920x1080 topmost swapchains (~48 MB DWM/GPU across 2 monitors) to ~77x1080 strips.
-                    text.replace(
-                        QStringLiteral("    readonly property bool growsFromOrigin: win.barPosition === \"top\" || win.barPosition === \"left\""),
-                        QStringLiteral("    readonly property bool growsFromOrigin: true")
-                    );
+                    // Preserve upstream growsFromOrigin (compactWindow on top/left only; full-screen
+                    // transparent click-through on right/bottom) so right/bottom bars never flash on
+                    // the opposite edge when expanding/shrinking for Edit Desktop.
                     text.replace(
                         QStringLiteral("                mediaPoints: PcCavaService.points"),
                         QStringLiteral("                mediaPoints: win.vertical ? [] : PcCavaService.points")

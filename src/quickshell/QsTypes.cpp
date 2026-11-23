@@ -10,6 +10,7 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QImage>
+#include <QJSValue>
 #include <QMetaMethod>
 #include <QMetaObject>
 #include <QQmlContext>
@@ -451,19 +452,129 @@ QQmlListProperty<QObject> QsScope::data() {
 // QsVariants
 // ============================================================================
 
+namespace {
+
+QVariant normalizeVariantValue(const QVariant& raw) {
+    QVariant v = raw;
+    if (v.typeId() == qMetaTypeId<QJSValue>()) {
+        v = v.value<QJSValue>().toVariant();
+    }
+    if (v.typeId() == QMetaType::QVariantList) {
+        const QVariantList src = v.toList();
+        QVariantList out;
+        out.reserve(src.size());
+        for (const QVariant& elem : src) {
+            out.append(normalizeVariantValue(elem));
+        }
+        return out;
+    }
+    if (v.typeId() == QMetaType::QVariantMap) {
+        const QVariantMap src = v.toMap();
+        QVariantMap out;
+        for (auto it = src.cbegin(); it != src.cend(); ++it) {
+            out.insert(it.key(), normalizeVariantValue(it.value()));
+        }
+        return out;
+    }
+    return v;
+}
+
+bool variantDeepEqual(const QVariant& a, const QVariant& b) {
+    if (!a.isValid() && !b.isValid()) {
+        return true;
+    }
+    if (a.isValid() != b.isValid()) {
+        return false;
+    }
+    const bool aObj = (a.metaType().flags() & QMetaType::PointerToQObject) != 0;
+    const bool bObj = (b.metaType().flags() & QMetaType::PointerToQObject) != 0;
+    if (aObj || bObj) {
+        if (!aObj || !bObj) {
+            return false;
+        }
+        return a.value<QObject*>() == b.value<QObject*>();
+    }
+    if (a.typeId() == QMetaType::QVariantMap && b.typeId() == QMetaType::QVariantMap) {
+        const QVariantMap ma = a.toMap();
+        const QVariantMap mb = b.toMap();
+        if (ma.size() != mb.size()) {
+            return false;
+        }
+        for (auto it = ma.cbegin(); it != ma.cend(); ++it) {
+            auto jt = mb.constFind(it.key());
+            if (jt == mb.cend() || !variantDeepEqual(it.value(), jt.value())) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if (a.typeId() == QMetaType::QVariantList && b.typeId() == QMetaType::QVariantList) {
+        const QVariantList la = a.toList();
+        const QVariantList lb = b.toList();
+        if (la.size() != lb.size()) {
+            return false;
+        }
+        for (int i = 0; i < la.size(); ++i) {
+            if (!variantDeepEqual(la.at(i), lb.at(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+    return a == b;
+}
+
+QVariantList extractVariantItems(const QVariant& model) {
+    const QVariant norm = normalizeVariantValue(model);
+    QVariantList items;
+    if (norm.typeId() == QMetaType::QVariantList) {
+        items = norm.toList();
+    } else if (norm.typeId() == QMetaType::QStringList) {
+        for (const QString& s : norm.toStringList()) {
+            items.append(s);
+        }
+    } else if (norm.canConvert<QVariantList>()) {
+        const QVariantList rawList = norm.toList();
+        items.reserve(rawList.size());
+        for (const QVariant& elem : rawList) {
+            items.append(normalizeVariantValue(elem));
+        }
+    } else if (norm.typeId() == QMetaType::Int) {
+        const int n = norm.toInt();
+        items.reserve(qMax(0, n));
+        for (int i = 0; i < n; ++i) {
+            items.append(i);
+        }
+    }
+    return items;
+}
+
+} // namespace
+
 QsVariants::~QsVariants() {
     qDeleteAll(m_created);
     m_created.clear();
+    m_items.clear();
 }
 
 void QsVariants::setModel(const QVariant& m) {
-    if (m_model == m) {
-        return;
+    const QVariantList nextItems = extractVariantItems(m);
+    if (m_complete && nextItems.size() == m_items.size()) {
+        bool same = true;
+        for (int i = 0; i < nextItems.size(); ++i) {
+            if (!variantDeepEqual(m_items.at(i), nextItems.at(i))) {
+                same = false;
+                break;
+            }
+        }
+        if (same) {
+            return;
+        }
     }
     m_model = m;
     Q_EMIT modelChanged();
     if (m_complete) {
-        rebuild();
+        rebuild(false);
     }
 }
 
@@ -474,44 +585,54 @@ void QsVariants::setDelegate(QQmlComponent* d) {
     m_delegate = d;
     Q_EMIT delegateChanged();
     if (m_complete) {
-        rebuild();
+        rebuild(true);
     }
 }
 
 void QsVariants::componentComplete() {
     m_complete = true;
-    rebuild();
+    rebuild(true);
 }
 
-void QsVariants::rebuild() {
-    for (QObject* obj : std::as_const(m_created)) {
-        if (obj) {
-            obj->deleteLater();
-        }
-    }
-    m_created.clear();
-    m_instances.clear();
-
+void QsVariants::rebuild(bool forceRecreate) {
     if (!m_delegate) {
+        for (QObject* obj : std::as_const(m_created)) {
+            if (obj) {
+                obj->deleteLater();
+            }
+        }
+        m_created.clear();
+        m_items.clear();
+        m_instances.clear();
         Q_EMIT instancesChanged();
         return;
     }
 
-    QVariantList items;
-    if (m_model.typeId() == QMetaType::QVariantList) {
-        items = m_model.toList();
-    } else if (m_model.typeId() == QMetaType::QStringList) {
-        for (const QString& s : m_model.toStringList()) {
-            items.append(s);
+    const QVariantList items = extractVariantItems(m_model);
+
+    if (!forceRecreate && items.size() == m_items.size() && m_created.size() == m_items.size()) {
+        bool allSame = true;
+        for (int i = 0; i < items.size(); ++i) {
+            if (!variantDeepEqual(m_items.at(i), items.at(i))) {
+                allSame = false;
+                break;
+            }
         }
-    } else if (m_model.canConvert<QVariantList>()) {
-        items = m_model.toList();
-    } else if (m_model.typeId() == QMetaType::Int) {
-        const int n = m_model.toInt();
-        for (int i = 0; i < n; ++i) {
-            items.append(i);
+        if (allSame) {
+            return;
         }
     }
+
+    const QVariantList oldItems = m_items;
+    const QList<QObject*> oldCreated = m_created;
+    QList<bool> reused(oldCreated.size(), false);
+
+    m_items.clear();
+    m_created.clear();
+    m_instances.clear();
+    m_items.reserve(items.size());
+    m_created.reserve(items.size());
+    m_instances.reserve(items.size());
 
     QQmlContext* baseCtx = m_delegate ? m_delegate->creationContext() : nullptr;
     if (!baseCtx) {
@@ -520,6 +641,29 @@ void QsVariants::rebuild() {
 
     for (int i = 0; i < items.size(); ++i) {
         const QVariant& item = items.at(i);
+
+        QObject* existingObj = nullptr;
+        if (!forceRecreate) {
+            for (int j = 0; j < oldCreated.size(); ++j) {
+                if (!reused.at(j) && oldCreated.at(j) && j < oldItems.size() &&
+                    variantDeepEqual(oldItems.at(j), item)) {
+                    reused[j] = true;
+                    existingObj = oldCreated.at(j);
+                    if (QQmlContext* ctx = qmlContext(existingObj)) {
+                        ctx->setContextProperty(QStringLiteral("index"), i);
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (existingObj) {
+            m_items.append(item);
+            m_created.append(existingObj);
+            m_instances.append(QVariant::fromValue(existingObj));
+            continue;
+        }
+
         auto* childCtx = new QQmlContext(baseCtx, this);
         childCtx->setContextProperty(QStringLiteral("modelData"), item);
         childCtx->setContextProperty(QStringLiteral("index"), i);
@@ -555,8 +699,15 @@ void QsVariants::rebuild() {
         }
         m_delegate->completeCreate();
 
+        m_items.append(item);
         m_created.append(obj);
         m_instances.append(QVariant::fromValue(obj));
+    }
+
+    for (int j = 0; j < oldCreated.size(); ++j) {
+        if (!reused.at(j) && oldCreated.at(j)) {
+            oldCreated.at(j)->deleteLater();
+        }
     }
 
     Q_EMIT instancesChanged();

@@ -229,10 +229,11 @@ Q_SIGNALS:
     void instancesChanged();
 
 private:
-    void rebuild();
+    void rebuild(bool forceRecreate = false);
 
     QVariant m_model;
     QPointer<QQmlComponent> m_delegate;
+    QVariantList m_items;
     QList<QObject*> m_created;
     QVariantList m_instances;
     bool m_complete = false;

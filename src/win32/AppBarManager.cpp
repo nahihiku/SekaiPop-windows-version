@@ -110,8 +110,8 @@ RECT AppBarManager::computeReservedRect(const RECT& monitorRect, Edge edge, int 
 
         QTimer::singleShot(700, this, [this, hwnd]() {
             auto f = m_bars.constFind(hwnd);
-            if (f != m_bars.constEnd() && IsWindow(hwnd) && !f->hiddenForFullscreen &&
-                !isMonitorFullscreen(f->monitor)) {
+            if (f != m_bars.constEnd() && IsWindow(hwnd) && !m_editModeSuspended &&
+                !f->hiddenForFullscreen && !isMonitorFullscreen(f->monitor)) {
                 ShowWindow(hwnd, SW_SHOWNOACTIVATE);
                 SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                              SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -280,41 +280,46 @@ void AppBarManager::applyReservation(BarEntry& entry) {
         entry.positioned = true;
         positionBarWindow(entry, barRect);
     }
-    qInfo("[AppBarManager] fallback bar hwnd=%p screen=%s rect=(%ld,%ld,%ld,%ld) vis=%d",
+    RECT winRect = {};
+    GetWindowRect(entry.hwnd, &winRect);
+    qInfo("[AppBarManager] fallback bar hwnd=%p screen=%s reserved=(%ld,%ld,%ld,%ld) win=(%ld,%ld,%ld,%ld) vis=%d",
           entry.hwnd,
           entry.window && entry.window->screen() ? qPrintable(entry.window->screen()->name()) : "null",
           barRect.left, barRect.top, barRect.right, barRect.bottom,
+          winRect.left, winRect.top, winRect.right, winRect.bottom,
           IsWindowVisible(entry.hwnd) ? 1 : 0);
 }
 
+void AppBarManager::setEditModeSuspended(bool suspended) {
+    m_editModeSuspended = suspended;
+}
+
 void AppBarManager::positionBarWindow(const BarEntry& entry, const RECT& rectPx) {
+    Q_UNUSED(rectPx);
     if (!entry.hwnd || !IsWindow(entry.hwnd)) {
         return;
     }
-    const int w = qMax(1, static_cast<int>(rectPx.right - rectPx.left));
-    const int h = qMax(1, static_cast<int>(rectPx.bottom - rectPx.top));
-    if (entry.hiddenForFullscreen || isMonitorFullscreen(entry.monitor)) {
+    // Keep QsPanelWindow::syncNow() in sole charge of Bar geometry so full-screen
+    // right/bottom bars, Edit Desktop's EditStage transform, and compactWindow popup
+    // room are never cropped down to the reserved workarea strip.
+    if (!m_editModeSuspended && (entry.hiddenForFullscreen || isMonitorFullscreen(entry.monitor))) {
         SetWindowPos(
             entry.hwnd,
             HWND_NOTOPMOST,
-            rectPx.left,
-            rectPx.top,
-            w,
-            h,
-            SWP_NOACTIVATE | SWP_HIDEWINDOW
+            0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW
         );
         return;
     }
     ShowWindow(entry.hwnd, SW_SHOWNOACTIVATE);
-    SetWindowPos(
-        entry.hwnd,
-        HWND_TOPMOST,
-        rectPx.left,
-        rectPx.top,
-        w,
-        h,
-        SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED
-    );
+    if (!m_editModeSuspended) {
+        SetWindowPos(
+            entry.hwnd,
+            HWND_TOPMOST,
+            0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW
+        );
+    }
 }
 
 bool AppBarManager::isMonitorFullscreen(HMONITOR hmon) const {
@@ -326,6 +331,9 @@ void AppBarManager::setFullscreenMonitors(const QSet<quintptr>& monitors) {
         return;
     }
     m_fullscreenMonitors = monitors;
+    if (m_editModeSuspended) {
+        return;
+    }
     for (auto it = m_bars.begin(); it != m_bars.end(); ++it) {
         BarEntry& entry = *it;
         if (!entry.hwnd || !IsWindow(entry.hwnd)) {
@@ -451,12 +459,14 @@ bool AppBarManager::nativeEventFilter(const QByteArray& eventType, void* message
             qInfo("[AppBarManager] ABN_FULLSCREENAPP raw=%d externalFs=%d fg=%p hwnd=%p",
                   msg->lParam != 0 ? 1 : 0, externalFs ? 1 : 0, fg, it->hwnd);
             // Never push below WallpaperWindow (HWND_BOTTOM); HWND_NOTOPMOST yields only to real fullscreen apps.
-            SetWindowPos(
-                it->hwnd,
-                externalFs ? HWND_NOTOPMOST : HWND_TOPMOST,
-                0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
-            );
+            if (!m_editModeSuspended) {
+                SetWindowPos(
+                    it->hwnd,
+                    externalFs ? HWND_NOTOPMOST : HWND_TOPMOST,
+                    0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+                );
+            }
         }
         return true;
     }

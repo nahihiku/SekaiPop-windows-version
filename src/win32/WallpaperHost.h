@@ -26,6 +26,8 @@ public:
     Q_INVOKABLE void registerWidgetWindow(QWindow* window, bool clickThrough, bool focusable);
     Q_INVOKABLE void registerBottomDockWindow(QWindow* window, bool focusable);
     Q_INVOKABLE void repinAll();
+    void setEditModeSuspended(bool suspended);
+    bool isEditModeSuspended() const { return m_editModeSuspended; }
 
     /**
      * Optional helper for environments running explorer.exe: spawns/locates the
@@ -47,6 +49,7 @@ private:
     QSet<HWND> m_clickThroughWidgets;
     QSet<HWND> m_focusableWidgets;
     bool m_repinning = false;
+    bool m_editModeSuspended = false;
 };
 
 } // namespace SekaiPop::Win32

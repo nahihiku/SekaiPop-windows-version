@@ -197,8 +197,6 @@ void WallpaperHost::applyWidgetStyle(HWND hwnd, bool clickThrough, bool focusabl
     exStyle &= ~WS_EX_APPWINDOW;
     if (clickThrough) {
         exStyle |= WS_EX_LAYERED | WS_EX_TRANSPARENT;
-    } else {
-        exStyle &= ~WS_EX_TRANSPARENT;
     }
     if (!focusable) {
         exStyle |= WS_EX_NOACTIVATE;
@@ -229,8 +227,12 @@ void WallpaperHost::applyWidgetStyle(HWND hwnd, bool clickThrough, bool focusabl
     );
 }
 
+void WallpaperHost::setEditModeSuspended(bool suspended) {
+    m_editModeSuspended = suspended;
+}
+
 void WallpaperHost::repinWallpapersBottom() {
-    if (m_repinning) {
+    if (m_repinning || m_editModeSuspended) {
         return;
     }
     m_repinning = true;
@@ -243,6 +245,9 @@ void WallpaperHost::repinWallpapersBottom() {
 }
 
 void WallpaperHost::repinAll() {
+    if (m_editModeSuspended) {
+        return;
+    }
     m_repinning = true;
     // Order top -> bottom beneath regular/maximized app windows:
     //   1. Unpinned Bottom-layer Docks (right below normal apps)
@@ -327,6 +332,25 @@ bool WallpaperHost::nativeEventFilter(const QByteArray& eventType, void* message
     const bool isWidget = m_widgetHwnds.contains(msg->hwnd);
     const bool isBottomDock = m_bottomDockHwnds.contains(msg->hwnd);
     if (!isWallpaper && !isVisualizer && !isWidget && !isBottomDock) {
+        return false;
+    }
+
+    if (m_editModeSuspended) {
+        // While Edit Desktop is active, QsWindowManager owns exact topmost z-ordering
+        // across WallpaperLayer -> Visualizer -> Widgets -> Bar/Dock -> EditTray.
+        // Still block wallpaper clicks from activating/raising WallpaperLayer over widgets.
+        if (msg->message == WM_MOUSEACTIVATE && isWallpaper) {
+            if (result) {
+                *result = MA_NOACTIVATE;
+            }
+            return true;
+        }
+        if (msg->message == WM_SYSCOMMAND && (msg->wParam & 0xFFF0) == SC_MINIMIZE) {
+            if (result) {
+                *result = 0;
+            }
+            return true;
+        }
         return false;
     }
 

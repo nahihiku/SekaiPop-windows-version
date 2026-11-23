@@ -1185,11 +1185,25 @@ void QsWindowManager::setEditModeObject(QObject* editModeSingleton) {
         const QMetaObject* mo = m_editModeObj->metaObject();
         const int sigIdx = mo->indexOfSignal("screenNameChanged()");
         const int activeIdx = mo->indexOfSignal("activeChanged()");
+        const int targetIdx = mo->indexOfSignal("editTargetChanged()");
         if (sigIdx >= 0) {
             connect(m_editModeObj, SIGNAL(screenNameChanged()), this, SLOT(scheduleRestack()));
         }
         if (activeIdx >= 0) {
             connect(m_editModeObj, SIGNAL(activeChanged()), this, SLOT(scheduleRestack()));
+        }
+        if (targetIdx >= 0) {
+            connect(m_editModeObj, SIGNAL(editTargetChanged()), this, SLOT(scheduleRestack()));
+        }
+        if (!m_focusConnected) {
+            if (auto* guiApp = qobject_cast<QGuiApplication*>(QCoreApplication::instance())) {
+                m_focusConnected = true;
+                connect(guiApp, &QGuiApplication::focusWindowChanged, this, [this](QWindow*) {
+                    if (!s_windowMgrShuttingDown && isEditModeActive()) {
+                        scheduleRestack();
+                    }
+                });
+            }
         }
         onEditModeChanged();
     }
@@ -1351,12 +1365,19 @@ void QsWindowManager::restackAll() {
     if (editing) {
         m_wasEditMode = true;
         m_normalStacked.clear();
+        if (m_wallpaperHost) {
+            m_wallpaperHost->setEditModeSuspended(true);
+        }
+        if (m_appBarManager) {
+            m_appBarManager->setEditModeSuspended(true);
+        }
+
         auto rankOf = [](QsPanelWindow* w) -> int {
             WlrLayershellAttached* ls = w->layerShell();
             const int layer = ls ? ls->layer() : WlrLayer::Top;
             const QString ns = ls ? ls->ns() : QString();
             if (layer == WlrLayer::Background && w->mask() == nullptr) {
-                return 0; // WallpaperLayer
+                return 0; // WallpaperLayer (EditBackdrop + framed desktop card)
             }
             if (layer == WlrLayer::Background && ns == QStringLiteral("sekaipop-visualizer")) {
                 return 1; // Audio Visualizer strictly behind other desktop widgets & Dock
@@ -1367,27 +1388,102 @@ void QsWindowManager::restackAll() {
             if (layer == WlrLayer::Bottom && ns != QStringLiteral("sekaipop-dock")) {
                 return 3; // Selected / raised Desktop Widget
             }
-            if (layer == WlrLayer::Top || ns == QStringLiteral("sekaipop-dock")) {
-                return 4; // Bar & Dock
+            if (layer == WlrLayer::Top || ns == QStringLiteral("sekaipop-dock") ||
+                ns == QStringLiteral("sekaipop-hotedge")) {
+                return 4; // Bar, Dock & HotEdge (strictly below EditTray)
             }
-            return 5; // Overlay (EditGuides, EditTray, EditDragGhost)
+            if (ns == QStringLiteral("sekaipop-edit-guides")) {
+                return 5; // Alignment grid & snap guides above desktop card, below shelf
+            }
+            if (ns == QStringLiteral("sekaipop-edit-drag")) {
+                return 7; // Dragged widget ghost always above EditTray
+            }
+            return 6; // Overlay (EditTray / sekaipop-edit-drawer, DesktopMenu, etc.)
         };
 
         QList<QsPanelWindow*> vis;
         for (QsPanelWindow* w : m_panels) {
-            if (w && w->isVisible() && w->winId()) {
+            if (w && w->isVisible() && w->handle() && w->winId()) {
                 vis.append(w);
             }
         }
         std::stable_sort(vis.begin(), vis.end(), [&](QsPanelWindow* a, QsPanelWindow* b) {
             return rankOf(a) < rankOf(b);
         });
-        for (QsPanelWindow* w : vis) {
-            HWND hwnd = reinterpret_cast<HWND>(w->winId());
-            if (hwnd) {
-                SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+
+        // Collect HWNDs top-to-bottom (highest rank first -> WallpaperLayer last).
+        QList<HWND> topDown;
+        topDown.reserve(vis.size());
+        bool allTopmost = true;
+        for (int i = vis.size() - 1; i >= 0; --i) {
+            HWND hwnd = reinterpret_cast<HWND>(vis.at(i)->winId());
+            if (!hwnd || !IsWindow(hwnd)) {
+                continue;
+            }
+            if ((GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) == 0) {
+                allTopmost = false;
+            }
+            topDown.append(hwnd);
+        }
+        if (topDown.isEmpty()) {
+            return;
+        }
+
+        // Fast-path: if every Edit Desktop panel is already WS_EX_TOPMOST and in exact
+        // top-to-bottom rank order, skip SetWindowPos completely (zero flicker).
+        if (allTopmost) {
+            QHash<HWND, int> zIndex;
+            zIndex.reserve(topDown.size());
+            int remaining = topDown.size();
+            for (HWND h : topDown) {
+                zIndex.insert(h, -1);
+            }
+            int pos = 0;
+            for (HWND cur = GetTopWindow(nullptr); cur && remaining > 0; cur = GetWindow(cur, GW_HWNDNEXT), ++pos) {
+                auto it = zIndex.find(cur);
+                if (it != zIndex.end() && it.value() < 0) {
+                    it.value() = pos;
+                    --remaining;
+                }
+            }
+            bool ordered = (remaining == 0);
+            for (int i = 1; ordered && i < topDown.size(); ++i) {
+                if (zIndex.value(topDown.at(i - 1)) >= zIndex.value(topDown.at(i))) {
+                    ordered = false;
+                }
+            }
+            if (ordered) {
+                return;
+            }
+        }
+
+        // Step 1: Promote any panel not yet in the WS_EX_TOPMOST band (ascending rank 0..7)
+        // so Windows reliably grants WS_EX_TOPMOST without flashing WallpaperLayer above EditTray.
+        if (!allTopmost) {
+            for (int i = topDown.size() - 1; i >= 0; --i) {
+                HWND hwnd = topDown.at(i);
+                if ((GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST) == 0) {
+                    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                }
+            }
+        }
+
+        // Step 2: Commit exact top-to-bottom rank order atomically in a single DWM frame.
+        HDWP hdwp = BeginDeferWindowPos(static_cast<int>(topDown.size()));
+        HWND insertAfter = HWND_TOPMOST;
+        for (HWND hwnd : topDown) {
+            if (hdwp) {
+                hdwp = DeferWindowPos(hdwp, hwnd, insertAfter, 0, 0, 0, 0,
+                                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            } else {
+                SetWindowPos(hwnd, insertAfter, 0, 0, 0, 0,
                              SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
             }
+            insertAfter = hwnd;
+        }
+        if (hdwp) {
+            EndDeferWindowPos(hdwp);
         }
         return;
     }
@@ -1396,6 +1492,29 @@ void QsWindowManager::restackAll() {
     if (leavingEdit) {
         m_wasEditMode = false;
         m_normalStacked.clear();
+        // Strip WS_EX_TOPMOST from all Background/Bottom panels while WallpaperHost's
+        // WM_WINDOWPOSCHANGING hook is still suspended so Windows cleanly demotes them
+        // out of the topmost band before repinAll() places them behind normal apps.
+        for (QsPanelWindow* w : m_panels) {
+            if (!w || !w->isVisible() || !w->handle() || !w->winId()) {
+                continue;
+            }
+            WlrLayershellAttached* ls = w->layerShell();
+            const int layer = ls ? ls->layer() : WlrLayer::Top;
+            if (layer == WlrLayer::Background || layer == WlrLayer::Bottom) {
+                HWND hwnd = reinterpret_cast<HWND>(w->winId());
+                if (hwnd && IsWindow(hwnd)) {
+                    SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                }
+            }
+        }
+        if (m_wallpaperHost) {
+            m_wallpaperHost->setEditModeSuspended(false);
+        }
+        if (m_appBarManager) {
+            m_appBarManager->setEditModeSuspended(false);
+        }
     }
 
     // Normal desktop mode: strict z-order:
@@ -1514,11 +1633,12 @@ void QsWindowManager::restackAll() {
 
     if ((leavingEdit || bottomOrderChanged) && m_wallpaperHost) {
         m_wallpaperHost->repinAll();
-        m_hitTestDirty = true;
+        markHitTestDirty();
         if (leavingEdit) {
             QTimer::singleShot(180, this, [this]() {
                 if (!s_windowMgrShuttingDown && !isEditModeActive() && m_wallpaperHost) {
                     m_wallpaperHost->repinAll();
+                    markHitTestDirty();
                 }
             });
         }
@@ -1562,6 +1682,15 @@ void QsWindowManager::pollHitTests() {
     }
     POINT pt = {};
     if (!GetCursorPos(&pt)) {
+        if (m_hitTestDirty) {
+            m_hitTestDirty = false;
+            const QPoint offscreen(-32768, -32768);
+            for (QsPanelWindow* w : std::as_const(m_panels)) {
+                if (w && w->isVisible() && (w->mask() != nullptr || w->isClickThrough())) {
+                    w->updateHitTest(offscreen);
+                }
+            }
+        }
         return;
     }
     const QPoint cursor(pt.x, pt.y);
