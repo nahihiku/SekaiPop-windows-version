@@ -21,6 +21,7 @@
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <algorithm>
+#include <windows.h>
 
 namespace SekaiPop::Quickshell {
 
@@ -141,6 +142,118 @@ QsGlobal::QsGlobal(const QString& shellDir, Services::AppSource* appSource, Win3
         if (QClipboard* cb = QGuiApplication::clipboard()) {
             connect(cb, &QClipboard::dataChanged, this, &QsGlobal::clipboardTextChanged);
         }
+    }
+
+    m_ukikuraTimer.setInterval(250);
+    connect(&m_ukikuraTimer, &QTimer::timeout, this, &QsGlobal::pollUkikuraNotches);
+    m_ukikuraTimer.start();
+    pollUkikuraNotches();
+}
+
+void QsGlobal::pollUkikuraNotches() {
+    // Detect live Ukikura Dynamic Island windows ("UkikuraNativeClass") per monitor
+    // so SekaiPop's Top Bar cleanly splits its center pills around the Ukikura notch.
+    QVariantMap next;
+    HWND cur = nullptr;
+    bool foundAny = false;
+    QList<HWND> ukiHwnds;
+    while ((cur = FindWindowExW(nullptr, cur, L"UkikuraNativeClass", nullptr)) != nullptr) {
+        if (!IsWindowVisible(cur)) {
+            continue;
+        }
+        RECT rc = {};
+        if (!GetWindowRect(cur, &rc) || (rc.right - rc.left) <= 0 || (rc.bottom - rc.top) <= 0) {
+            continue;
+        }
+        ukiHwnds.append(cur);
+        foundAny = true;
+    }
+
+    if (foundAny) {
+        // Refresh Ukikura user config (notchScale, featureMusic, minimalNotch) only when modified.
+        QString localAppData = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+        if (localAppData.isEmpty()) {
+            localAppData = QDir::homePath() + QStringLiteral("/AppData/Local");
+        }
+        const QString cfgPath = QDir(localAppData).filePath(QStringLiteral("Ukikura/data/config.json"));
+        const QFileInfo fi(cfgPath);
+        if (fi.exists()) {
+            const qint64 mt = fi.lastModified().toMSecsSinceEpoch();
+            if (mt != m_ukikuraCfgMtime) {
+                m_ukikuraCfgMtime = mt;
+                QFile f(cfgPath);
+                if (f.open(QIODevice::ReadOnly)) {
+                    const QJsonDocument d = QJsonDocument::fromJson(f.readAll());
+                    if (d.isObject()) {
+                        const QJsonObject o = d.object();
+                        const int sc = o.value(QStringLiteral("notchScale")).toInt(0);
+                        switch (sc) {
+                        case 2: m_ukikuraScaleMul = 1.15; break;
+                        case 3: m_ukikuraScaleMul = 1.30; break;
+                        case 4: m_ukikuraScaleMul = 1.50; break;
+                        default: m_ukikuraScaleMul = 1.0; break;
+                        }
+                        m_ukikuraFeatureMusic = o.value(QStringLiteral("featureMusic")).toBool(true);
+                        m_ukikuraMinimal = o.value(QStringLiteral("minimalNotch")).toBool(false);
+                    }
+                }
+            }
+        }
+
+        // Map each QsScreen by both GDI device name (MONITORINFOEXW::szDevice) and HMONITOR fallback
+        QHash<QString, QString> devToScreen;
+        QHash<HMONITOR, QString> monToScreen;
+        for (QsScreen* s : std::as_const(m_screenObjs)) {
+            if (!s || !s->qscreen()) {
+                continue;
+            }
+            const QString sName = s->name();
+            devToScreen.insert(sName.toLower(), sName);
+            const QRect g = s->qscreen()->geometry();
+            const qreal dpr = qMax<qreal>(0.5, s->qscreen()->devicePixelRatio());
+            const POINT pt{
+                qRound(g.x() + (g.width() * 0.5) * dpr),
+                qRound(g.y() + (g.height() * 0.5) * dpr)
+            };
+            if (HMONITOR hm = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST)) {
+                monToScreen.insert(hm, sName);
+            }
+        }
+
+        for (HWND hwnd : ukiHwnds) {
+            RECT rc = {};
+            if (!GetWindowRect(hwnd, &rc)) {
+                continue;
+            }
+            HMONITOR hm = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            if (!hm) {
+                continue;
+            }
+            MONITORINFOEXW mi = {};
+            mi.cbSize = sizeof(mi);
+            if (!GetMonitorInfoW(hm, &mi) || rc.top > mi.rcMonitor.top + 80) {
+                continue;
+            }
+            const QString devKey = QString::fromWCharArray(mi.szDevice).toLower();
+            QString scrName = devToScreen.value(devKey);
+            if (scrName.isEmpty()) {
+                scrName = monToScreen.value(hm);
+            }
+            if (!scrName.isEmpty()) {
+                next.insert(scrName, QVariantMap{
+                    {QStringLiteral("scale"), m_ukikuraScaleMul},
+                    {QStringLiteral("featureMusic"), m_ukikuraFeatureMusic},
+                    {QStringLiteral("minimal"), m_ukikuraMinimal}
+                });
+            }
+        }
+    }
+
+    if (next != m_ukikuraNotches) {
+        m_ukikuraNotches = next;
+        qInfo("[Ukikura] Active top-notch monitors: %s",
+              m_ukikuraNotches.isEmpty() ? "none" : qPrintable(m_ukikuraNotches.keys().join(QStringLiteral(", "))));
+        Q_EMIT ukikuraNotchesChanged();
     }
 }
 

@@ -267,7 +267,7 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
     ensureDirJunction(stageQsDir + QStringLiteral("/shaders"), exeDir + QStringLiteral("/shaders"));
 
     // Fast fingerprint check to avoid re-reading 540+ QML files on every startup.
-    static constexpr const char* kStageVersion = "v41-win-previews-bar-discord-clean";
+    static constexpr const char* kStageVersion = "v42-win-ukikura-notch-integration";
     QElapsedTimer stageTimer;
     stageTimer.start();
 
@@ -518,14 +518,199 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                 // Monitor 2 Bar parity on Windows DPI scaling (e.g. 1920x1080 @ 125% = 864 logical px):
                 // lower vertical tighterV threshold from 880 to 700 so Weather, CPU/RAM, and plugins
                 // stay visible identically across Monitor 1 (1.0x) and Monitor 2 (1.25x / 1.5x).
+                // Also integrate with Ukikura Dynamic Island: when Ukikura is active at the top-center
+                // notch of a monitor, smoothly split Top Bar center pills left/right around Ukikura.
                 if (fi.fileName() == QStringLiteral("Status_Bar.qml")) {
                     text.replace(
                         QStringLiteral("readonly property bool tighterV: status_Bar.vertical && content.height < 880"),
                         QStringLiteral("readonly property bool tighterV: status_Bar.vertical && content.height < 700")
                     );
                     text.replace(
-                        QStringLiteral("|| content.height > leftGroup.height + rightGroup.height + centerGroup.implicitHeight + 24"),
-                        QStringLiteral("|| content.height > leftGroup.height + rightGroup.height + centerGroup.implicitHeight + 8")
+                        QStringLiteral(
+                            "    property bool vertical: false\n"
+                            "    property string barPosition: \"top\""
+                        ),
+                        QStringLiteral(
+                            "    property bool vertical: false\n"
+                            "    property string barPosition: \"top\"\n"
+                            "    property real ukikuraGap: 0\n"
+                            "    Behavior on ukikuraGap {\n"
+                            "        NumberAnimation { duration: 220; easing.type: Easing.OutCubic }\n"
+                            "    }\n"
+                            "    readonly property bool ukikuraActive: !status_Bar.vertical && status_Bar.barPosition === \"top\" && status_Bar.ukikuraGap > 1\n"
+                            "    readonly property var centerRightSet: {\n"
+                            "        const res = ({})\n"
+                            "        if (!status_Bar.ukikuraActive)\n"
+                            "            return res\n"
+                            "        const raw = status_Bar.layout[\"center\"] || []\n"
+                            "        const active = []\n"
+                            "        for (const id of raw) {\n"
+                            "            if (!status_Bar.shows(id))\n"
+                            "                continue\n"
+                            "            if (id === \"discord\" && !(status_Bar.discordInCall || status_Bar.discordNeedsAuth || status_Bar.discordAuthorizing))\n"
+                            "                continue\n"
+                            "            if (id === \"privacy\" && !(status_Bar.privacyMic || status_Bar.privacyAudio || status_Bar.privacyScreen))\n"
+                            "                continue\n"
+                            "            if (id === \"updates\" && !(status_Bar.updatesCount > 0 || status_Bar.updatesShowZero || status_Bar.updatesLoading))\n"
+                            "                continue\n"
+                            "            if (id === \"battery\" && !status_Bar.batteryAvailable)\n"
+                            "                continue\n"
+                            "            if (id === \"keyboardLayout\" && status_Bar.keyboardLayoutCode === \"\")\n"
+                            "                continue\n"
+                            "            if (id === \"status\" && !(status_Bar.statusNetworkShown || status_Bar.statusBluetoothShown || status_Bar.statusSpeakerShown))\n"
+                            "                continue\n"
+                            "            if (id === \"tray\" && !(status_Bar.trayAvailable || (status_Bar.trayPinned && status_Bar.trayPinned.length > 0)))\n"
+                            "                continue\n"
+                            "            if (id === \"media\" && !status_Bar.mediaActive)\n"
+                            "                continue\n"
+                            "            active.push(id)\n"
+                            "        }\n"
+                            "        if (active.length <= 1)\n"
+                            "            return res\n"
+                            "        const est = {\n"
+                            "            discord: 260, utilButtons: 250, media: 220, activeWindow: 180,\n"
+                            "            workspaces: 170, resources: 132, date: 115, status: 108,\n"
+                            "            weather: 88, battery: 86, clock: 76, tray: 64,\n"
+                            "            privacy: 56, updates: 56, keyboardLayout: 54, notifications: 46\n"
+                            "        }\n"
+                            "        const gap = status_Bar.zoneGap\n"
+                            "        const wts = active.map(id => est[id] || 96)\n"
+                            "        let bestSplit = 1\n"
+                            "        let bestDiff = 1e9\n"
+                            "        for (let s = 1; s < active.length; ++s) {\n"
+                            "            let lw = 0\n"
+                            "            let rw = 0\n"
+                            "            for (let i = 0; i < s; ++i) lw += wts[i] + (i > 0 ? gap : 0)\n"
+                            "            for (let i = s; i < active.length; ++i) rw += wts[i] + (i > s ? gap : 0)\n"
+                            "            const d = Math.abs(lw - rw)\n"
+                            "            if (d < bestDiff) {\n"
+                            "                bestDiff = d\n"
+                            "                bestSplit = s\n"
+                            "            }\n"
+                            "        }\n"
+                            "        for (let i = bestSplit; i < active.length; ++i) {\n"
+                            "            res[active[i]] = true\n"
+                            "            if (active[i] === \"tray\")\n"
+                            "                res[\"trayButton\"] = true\n"
+                            "        }\n"
+                            "        return res\n"
+                            "    }\n"
+                            "    function centerSideWidth(onRight) {\n"
+                            "        let w = 0\n"
+                            "        for (const id of (status_Bar.layout[\"center\"] || [])) {\n"
+                            "            if (id === \"media\" || (!!status_Bar.centerRightSet[id]) !== onRight)\n"
+                            "                continue\n"
+                            "            for (const it of status_Bar.itemsOf(id)) {\n"
+                            "                if (it.visible)\n"
+                            "                    w += status_Bar.slotWidth(it) + status_Bar.zoneGap\n"
+                            "            }\n"
+                            "        }\n"
+                            "        return w > 0 ? Math.max(0, w - status_Bar.zoneGap) : 0\n"
+                            "    }\n"
+                            "    readonly property real effectiveUkikuraGap: {\n"
+                            "        if (!status_Bar.ukikuraActive)\n"
+                            "            return 0\n"
+                            "        const half = content.width / 2\n"
+                            "        const rightFixed = Math.max(0, status_Bar.othersWidth(\"right\") - status_Bar.zoneGap)\n"
+                            "        const leftFixed = Math.max(0, status_Bar.othersWidth(\"left\") - status_Bar.zoneGap)\n"
+                            "        const rightSideRoom = half - rightFixed - status_Bar.centerSideWidth(true) - 10\n"
+                            "        const leftSideRoom = half - leftFixed - status_Bar.centerSideWidth(false) - 10\n"
+                            "        const safeRoom = 2 * Math.max(94, Math.min(rightSideRoom, leftSideRoom))\n"
+                            "        const maxCap = Math.min(410, Math.min(content.width * 0.24, safeRoom))\n"
+                            "        return Math.max(status_Bar.zoneGap, Math.min(status_Bar.ukikuraGap, maxCap))\n"
+                            "    }"
+                        )
+                    );
+                    text.replace(
+                        QStringLiteral(
+                            "    function zoneItem(key) {\n"
+                            "        const z = status_Bar.zoneMap[key]\n"
+                            "        return z === \"left\" ? leftGroup : (z === \"center\" ? centerGroup : rightGroup)\n"
+                            "    }"
+                        ),
+                        QStringLiteral(
+                            "    function zoneItem(key) {\n"
+                            "        const z = status_Bar.zoneMap[key]\n"
+                            "        if (z === \"left\") return leftGroup\n"
+                            "        if (z === \"center\") return (status_Bar.ukikuraActive && status_Bar.centerRightSet[key]) ? centerRightGroup : centerGroup\n"
+                            "        return rightGroup\n"
+                            "    }"
+                        )
+                    );
+                    text.replace(
+                        QStringLiteral(
+                            "        if (z === \"left\") {\n"
+                            "            room = content.width - rightGroup.width - 12 - status_Bar.othersWidth(\"left\")\n"
+                            "            if (centerGroup.width > 0)\n"
+                            "                room = Math.min(room, half - centerGroup.width / 2 - 12 - status_Bar.othersWidth(\"left\"))\n"
+                            "        } else if (z === \"right\") {\n"
+                            "            room = content.width - leftGroup.width - 12 - status_Bar.othersWidth(\"right\")\n"
+                            "            if (centerGroup.width > 0)\n"
+                            "                room = Math.min(room, half - centerGroup.width / 2 - 12 - status_Bar.othersWidth(\"right\"))\n"
+                            "        } else {\n"
+                            "            room = 2 * (Math.min(half - leftGroup.width, half - rightGroup.width) - 12)\n"
+                            "                - status_Bar.othersWidth(\"center\")\n"
+                            "        }"
+                        ),
+                        QStringLiteral(
+                            "        if (z === \"left\") {\n"
+                            "            room = content.width - rightGroup.width - 12 - status_Bar.othersWidth(\"left\")\n"
+                            "            if (status_Bar.ukikuraActive)\n"
+                            "                room = Math.min(room, half - status_Bar.effectiveUkikuraGap / 2 - centerGroup.width - 12 - status_Bar.othersWidth(\"left\"))\n"
+                            "            else if (centerGroup.width > 0)\n"
+                            "                room = Math.min(room, half - centerGroup.width / 2 - 12 - status_Bar.othersWidth(\"left\"))\n"
+                            "        } else if (z === \"right\") {\n"
+                            "            room = content.width - leftGroup.width - 12 - status_Bar.othersWidth(\"right\")\n"
+                            "            if (status_Bar.ukikuraActive)\n"
+                            "                room = Math.min(room, half - status_Bar.effectiveUkikuraGap / 2 - centerRightGroup.width - 12 - status_Bar.othersWidth(\"right\"))\n"
+                            "            else if (centerGroup.width > 0)\n"
+                            "                room = Math.min(room, half - centerGroup.width / 2 - 12 - status_Bar.othersWidth(\"right\"))\n"
+                            "        } else if (status_Bar.ukikuraActive) {\n"
+                            "            const onRight = !!status_Bar.centerRightSet[\"media\"]\n"
+                            "            const sideEdge = onRight ? rightGroup.width : leftGroup.width\n"
+                            "            room = half - status_Bar.effectiveUkikuraGap / 2 - sideEdge - 14 - status_Bar.centerSideWidth(onRight)\n"
+                            "        } else {\n"
+                            "            room = 2 * (Math.min(half - leftGroup.width, half - rightGroup.width) - 12)\n"
+                            "                - status_Bar.othersWidth(\"center\")\n"
+                            "        }"
+                        )
+                    );
+                    text.replace(
+                        QStringLiteral(
+                            "        GridLayout {\n"
+                            "            id: centerGroup\n"
+                            "            anchors.centerIn: parent\n"
+                            "            visible: !status_Bar.vertical\n"
+                            "                || content.height > leftGroup.height + rightGroup.height + centerGroup.implicitHeight + 24\n"
+                            "            columns: status_Bar.vertical ? 1 : 100\n"
+                            "            columnSpacing: status_Bar.zoneGap\n"
+                            "            rowSpacing: status_Bar.vertical ? status_Bar.vGap : status_Bar.zoneGap\n"
+                            "        }"
+                        ),
+                        QStringLiteral(
+                            "        GridLayout {\n"
+                            "            id: centerGroup\n"
+                            "            x: status_Bar.ukikuraActive\n"
+                            "                ? Math.max(0, parent.width / 2 - status_Bar.effectiveUkikuraGap / 2 - width)\n"
+                            "                : (parent.width - width) / 2\n"
+                            "            y: (parent.height - height) / 2\n"
+                            "            visible: !status_Bar.vertical\n"
+                            "                || content.height > leftGroup.height + rightGroup.height + centerGroup.implicitHeight + 8\n"
+                            "            columns: status_Bar.vertical ? 1 : 100\n"
+                            "            columnSpacing: status_Bar.zoneGap\n"
+                            "            rowSpacing: status_Bar.vertical ? status_Bar.vGap : status_Bar.zoneGap\n"
+                            "        }\n"
+                            "\n"
+                            "        GridLayout {\n"
+                            "            id: centerRightGroup\n"
+                            "            x: Math.min(Math.max(0, parent.width - width), parent.width / 2 + status_Bar.effectiveUkikuraGap / 2)\n"
+                            "            y: (parent.height - height) / 2\n"
+                            "            visible: status_Bar.ukikuraActive && children.length > 0\n"
+                            "            columns: 100\n"
+                            "            columnSpacing: status_Bar.zoneGap\n"
+                            "            rowSpacing: status_Bar.zoneGap\n"
+                            "        }"
+                        )
                     );
                 }
 
@@ -2537,6 +2722,63 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                 }
 
                 if (fi.fileName() == QStringLiteral("Bar.qml")) {
+                    // Ukikura Dynamic Island integration: expose per-monitor top notch gap to Status_Bar
+                    // and punch the notch cutout out of Bar's input mask so hover/click/drop go to Ukikura.
+                    text.replace(
+                        QStringLiteral(
+                            "    mask: Region {\n"
+                            "        item: barMask\n"
+                            "        regions: [ Region { item: hotCut; intersection: Intersection.Subtract } ]\n"
+                            "    }\n"
+                            "    Item {\n"
+                            "        id: hotCut"
+                        ),
+                        QStringLiteral(
+                            "    readonly property var ukikuraInfo: (!win.vertical && win.barPosition === \"top\" && !win.editing && win.screen && Quickshell.ukikuraNotches)\n"
+                            "        ? (Quickshell.ukikuraNotches[win.screen.name] || null) : null\n"
+                            "    readonly property real ukikuraGap: {\n"
+                            "        const info = win.ukikuraInfo\n"
+                            "        if (!info)\n"
+                            "            return 0\n"
+                            "        const sc = Number(info.scale) || 1.0\n"
+                            "        const musicWide = !!info.featureMusic && !info.minimal && mediaSource.present && mediaSource.playing\n"
+                            "        const baseDip = info.minimal ? 188 : (musicWide ? 392 : 216)\n"
+                            "        return Math.round((baseDip * sc) / Math.max(0.5, win.uiScale))\n"
+                            "    }\n"
+                            "    mask: Region {\n"
+                            "        item: barMask\n"
+                            "        regions: [\n"
+                            "            Region { item: hotCut; intersection: Intersection.Subtract },\n"
+                            "            Region { item: ukikuraCut; intersection: Intersection.Subtract }\n"
+                            "        ]\n"
+                            "    }\n"
+                            "    Item {\n"
+                            "        id: ukikuraCut\n"
+                            "        readonly property bool on: win.barPosition === \"top\" && !win.passive && win.ukikuraGap > 1\n"
+                            "        width: on ? Math.min(win.width, Math.round((statusBar ? statusBar.effectiveUkikuraGap : win.ukikuraGap) * win.uiScale)) : 0\n"
+                            "        height: on ? win.stripSize : 0\n"
+                            "        x: (win.width - width) / 2\n"
+                            "        y: 0\n"
+                            "    }\n"
+                            "    Item {\n"
+                            "        id: hotCut"
+                        )
+                    );
+                    text.replace(
+                        QStringLiteral(
+                            "            Status_Bar {\n"
+                            "                id: statusBar\n"
+                            "                vertical: win.vertical\n"
+                            "                barPosition: win.barPosition"
+                        ),
+                        QStringLiteral(
+                            "            Status_Bar {\n"
+                            "                id: statusBar\n"
+                            "                vertical: win.vertical\n"
+                            "                barPosition: win.barPosition\n"
+                            "                ukikuraGap: win.ukikuraGap"
+                        )
+                    );
                     // Preserve upstream growsFromOrigin (compactWindow on top/left only; full-screen
                     // transparent click-through on right/bottom) so right/bottom bars never flash on
                     // the opposite edge when expanding/shrinking for Edit Desktop.

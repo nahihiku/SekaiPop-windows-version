@@ -68,6 +68,7 @@ class QsGlobal : public QObject {
     Q_PROPERTY(QString workingDirectory READ shellDir CONSTANT)
     Q_PROPERTY(bool inhibitReloadPopup READ inhibitReloadPopup WRITE setInhibitReloadPopup NOTIFY inhibitReloadPopupChanged)
     Q_PROPERTY(QString clipboardText READ clipboardText WRITE setClipboardText NOTIFY clipboardTextChanged)
+    Q_PROPERTY(QVariantMap ukikuraNotches READ ukikuraNotches NOTIFY ukikuraNotchesChanged)
 
 public:
     explicit QsGlobal(const QString& shellDir, Services::AppSource* appSource, Win32::WindowTracker* tracker = nullptr, QObject* parent = nullptr);
@@ -89,6 +90,7 @@ public:
 
     QString clipboardText() const;
     void setClipboardText(const QString& text);
+    QVariantMap ukikuraNotches() const { return m_ukikuraNotches; }
 
     Q_INVOKABLE QString env(const QString& name) const;
     Q_INVOKABLE void execDetached(const QVariant& command);
@@ -104,11 +106,13 @@ Q_SIGNALS:
     void screensChanged();
     void inhibitReloadPopupChanged();
     void clipboardTextChanged();
+    void ukikuraNotchesChanged();
     void reloadCompleted();
     void reloadFailed(const QString& errorString);
 
 private:
     void rebuildScreens();
+    void pollUkikuraNotches();
 
     static QsGlobal* s_instance;
     QString m_shellDir;
@@ -121,6 +125,12 @@ private:
     Win32::WindowTracker* m_windowTracker = nullptr;
     QList<QsScreen*> m_screenObjs;
     QVariantList m_screens;
+    QVariantMap m_ukikuraNotches;
+    QTimer m_ukikuraTimer;
+    qint64 m_ukikuraCfgMtime = -1;
+    qreal m_ukikuraScaleMul = 1.0;
+    bool m_ukikuraFeatureMusic = true;
+    bool m_ukikuraMinimal = false;
     bool m_inhibitReloadPopup = false;
 };
 

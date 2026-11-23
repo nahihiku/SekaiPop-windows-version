@@ -1617,6 +1617,18 @@ void QsWindowManager::restackAll() {
             HWND hwnd = reinterpret_cast<HWND>(w->winId());
             if (!isPanelOnFullscreenMonitor(w)) {
                 SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                // Keep live Ukikura Dynamic Island ("UkikuraNativeClass") visually and interactively
+                // above SekaiPop's Top Bar on the same monitor while Bar remains above normal apps.
+                HMONITOR barMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                HWND uki = nullptr;
+                while ((uki = FindWindowExW(nullptr, uki, L"UkikuraNativeClass", nullptr)) != nullptr) {
+                    if (IsWindowVisible(uki) &&
+                        (GetWindowLongPtrW(uki, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0 &&
+                        MonitorFromWindow(uki, MONITOR_DEFAULTTONEAREST) == barMon) {
+                        SetWindowPos(hwnd, uki, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                        break;
+                    }
+                }
             }
             m_normalStacked.insert(w);
         }
