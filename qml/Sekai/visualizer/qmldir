@@ -1,0 +1,3 @@
+module Sekai.visualizer
+TideShaderLayer 1.0 TideShaderLayer.qml
+TideVisualizer 1.0 TideVisualizer.qml

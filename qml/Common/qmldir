@@ -1,0 +1,7 @@
+module Common
+singleton Directories 1.0 Directories.qml
+singleton Theme 1.0 Theme.qml
+singleton PanelImages 1.0 PanelImages.qml
+singleton PresetMotion 1.0 PresetMotion.qml
+singleton ScrapbookTheme 1.0 ScrapbookTheme.qml
+ThemeSet 1.0 ThemeSet.qml

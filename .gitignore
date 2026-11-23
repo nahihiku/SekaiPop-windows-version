@@ -1,0 +1,58 @@
+# Build & release artifacts
+build/
+build-*/
+out/
+dist/
+release/
+*.cab
+*.pak
+*.pdb
+*.obj
+*.o
+*.ilk
+*.exp
+*.lib
+*.exe
+*.dll
+
+# Local packaging & installer leftovers
+setup.inf
+setup.rpt
+aqtinstall.log
+700/
+SekaiTaskMgr/
+
+# Logs, caches, and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+*~
+.cache/
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE / local workspace settings
+.vs/
+.vscode/
+.idea/
+*.user
+CMakeUserPresets.json
+
+# AI assistant config, prompts, and rule markdown files (never commit)
+.gemini/
+.agent/
+.agents/
+.claude/
+.cursor/
+.windsurf/
+.cursorrules
+.windsurfrules
+.clinerules
+.github/copilot-instructions.md
+GEMINI.md
+CLAUDE.md
+AGENTS.md
+RULES.md
+*.rules.md

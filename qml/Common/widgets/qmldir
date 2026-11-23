@@ -1,0 +1,24 @@
+module Common.widgets
+Burst 1.0 Burst.qml
+ClippingRectangle 1.0 ClippingRectangle.qml
+DiamondDot 1.0 DiamondDot.qml
+DotField 1.0 DotField.qml
+FramedImage 1.0 FramedImage.qml
+IconImage 1.0 IconImage.qml
+InnerRing 1.0 InnerRing.qml
+MaterialIcon 1.0 MaterialIcon.qml
+Pill 1.0 Pill.qml
+RoundClip 1.0 RoundClip.qml
+ScaleHost 1.0 ScaleHost.qml
+SearchPill 1.0 SearchPill.qml
+SegmentSwitch 1.0 SegmentSwitch.qml
+SekaiBackdrop 1.0 SekaiBackdrop.qml
+SekaiPlate 1.0 SekaiPlate.qml
+SekaiScrollBar 1.0 SekaiScrollBar.qml
+SettingRoundButton 1.0 SettingRoundButton.qml
+ShellBadge 1.0 ShellBadge.qml
+Slant 1.0 Slant.qml
+StickerText 1.0 StickerText.qml
+WashiTape 1.0 WashiTape.qml
+WeatherGlyph 1.0 WeatherGlyph.qml
+WheelScroll 1.0 WheelScroll.qml

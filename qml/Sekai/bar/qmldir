@@ -1,0 +1,24 @@
+module Sekai.bar
+ActiveWindowKey 1.0 ActiveWindowKey.qml
+BarTip 1.0 BarTip.qml
+BatteryIndicator 1.0 BatteryIndicator.qml
+BatteryPopup 1.0 BatteryPopup.qml
+CalendarPopup 1.0 CalendarPopup.qml
+DateIndicator 1.0 DateIndicator.qml
+LoadGauge 1.0 LoadGauge.qml
+LoadPlate 1.0 LoadPlate.qml
+MediaPill 1.0 MediaPill.qml
+MediaPopup 1.0 MediaPopup.qml
+PillBars 1.0 PillBars.qml
+PillWave 1.0 PillWave.qml
+ResourceIndicator 1.0 ResourceIndicator.qml
+ResourcePopup 1.0 ResourcePopup.qml
+ScrollHint 1.0 ScrollHint.qml
+SectionTab 1.0 SectionTab.qml
+StatusPill 1.0 StatusPill.qml
+Status_Bar 1.0 Status_Bar.qml
+UtilButtons 1.0 UtilButtons.qml
+UtilKey 1.0 UtilKey.qml
+WeatherIndicator 1.0 WeatherIndicator.qml
+WeatherPopup 1.0 WeatherPopup.qml
+WorkspaceBadges 1.0 WorkspaceBadges.qml

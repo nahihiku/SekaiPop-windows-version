@@ -1,0 +1,15 @@
+module Windows
+BarPopupWindow 1.0 BarPopupWindow.qml
+BarWindow 1.0 BarWindow.qml
+ClockWidgetWindow 1.0 ClockWidgetWindow.qml
+DesktopContextMenu 1.0 DesktopContextMenu.qml
+DockWindow 1.0 DockWindow.qml
+EditDesktopWindow 1.0 EditDesktopWindow.qml
+LauncherWindow 1.0 LauncherWindow.qml
+OsdWindow 1.0 OsdWindow.qml
+PhoneWindow 1.0 PhoneWindow.qml
+TodoWindow 1.0 TodoWindow.qml
+UserCardWindow 1.0 UserCardWindow.qml
+VisualizerWindow 1.0 VisualizerWindow.qml
+WallpaperWindow 1.0 WallpaperWindow.qml
+WeatherCardWindow 1.0 WeatherCardWindow.qml

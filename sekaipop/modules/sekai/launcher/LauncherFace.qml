@@ -93,20 +93,8 @@ Item {
     readonly property string query: input.text
     readonly property bool searching: query.trim().length > 0
     // The pick comes from the arrow keys (not the mouse): only then is one
-    // tile picked out. Typing sets it back to false, so Left / Right move the
-    // caret in what is typed again until Down goes back into the grid.
+    // tile picked out.
     property bool keyNav: false
-    // Left / Right move the grid's pick rather than the search box's caret: with
-    // nothing typed, or once Down (or Tab) has taken the keys into the grid while
-    // typing (docs/LAUNCHER-KEY-CURSOR.md, "Typing, then the arrows").
-    readonly property bool gridHasArrows: query.length === 0
-        || (keyNav && drawerGrid.currentIndex >= 0 && extrasLayer.rowPick < 0)
-    // The grid's pick is shown (the cursor plate behind a tile) whenever it is what
-    // Enter would open: after the arrow keys moved it, and also while searching,
-    // where Enter opens the first match even before an arrow key is pressed. Not
-    // while a row above the grid (a system action, a command) or a card has Enter.
-    readonly property bool gridPickShown: (keyNav || searching) && drawerGrid.currentIndex >= 0
-        && extrasLayer.rowPick < 0 && !extrasLayer.cardShown
 
     // The grid used to come in each time the screen did: a quick rise and fade while
     // the phone was still sliding up under it. That is the expensive part of opening
@@ -243,12 +231,6 @@ Item {
         const grid = drawerGrid
         if (grid.count === 0)
             return
-        // While typing the pick already sits on the first match (Enter opens it), so
-        // the first Down takes the keys into the grid there instead of a row lower.
-        if (key === Qt.Key_Down && face.searching && !face.keyNav && grid.currentIndex >= 0) {
-            face.keyNav = true
-            return
-        }
         face.keyNav = true
         if (grid.currentIndex < 0) {
             grid.currentIndex = 0
@@ -266,7 +248,6 @@ Item {
 
     // New text: the pick starts on the first match.
     onQueryChanged: {
-        face.keyNav = false
         drawerGrid.currentIndex = face.searching ? 0 : -1
         drawerGrid.positionViewAtBeginning()
         // Once the model has taken the new list as well.
@@ -475,17 +456,14 @@ Item {
                     && extrasLayer.cycleCardTab(event.key === Qt.Key_Left ? -1 : 1)) {
                     // Ctrl+Left / Ctrl+Right on the emoji card: the call in the
                     // condition does the work. Any other mode falls through.
-                    } else if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_P
-                        && extrasLayer.pinKey()) {
-                    // Ctrl+P on the clipboard card: pin / unpin the picked entry.
                     } else if (event.key === Qt.Key_Escape) {
                         face.back()
                     } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                         if (!extrasLayer.enter((event.modifiers & Qt.ShiftModifier) !== 0))
                             face.activateCurrent()
                     } else if (event.key === Qt.Key_Up || event.key === Qt.Key_Down
-                        || event.key === Qt.Key_Left && (face.gridHasArrows || extrasLayer.cardMode === "emoji")
-                        || event.key === Qt.Key_Right && (face.gridHasArrows || extrasLayer.cardMode === "emoji")
+                        || event.key === Qt.Key_Left && (input.text.length === 0 || extrasLayer.cardMode === "emoji")
+                        || event.key === Qt.Key_Right && (input.text.length === 0 || extrasLayer.cardMode === "emoji")
                     ) {
                         face.moveKey(event.key)
                     } else if (event.key === Qt.Key_Tab) {
@@ -589,13 +567,6 @@ Item {
             reuseItems: true
             pixelAligned: true
             delegate: tileDelegate
-            // The keyboard's cursor: ONE plate under the delegates that slides from tile
-            // to tile, so each arrow press shows where the pick went. Hover does not
-            // bring it (a hovered icon only grows), so mouse and keys never both look
-            // picked.
-            highlight: pickPlate
-            highlightFollowsCurrentItem: true
-            highlightMoveDuration: 90
             bottomMargin: Math.max(0, face.gridBottom - face.visibleBottom + 24)
 
             SekaiScrollBar {}
@@ -645,42 +616,6 @@ Item {
         onColorPicked: hex => face.colorPickedBack(hex)
     }
 
-    // ===== the keyboard's cursor =====
-    // The same language as the extras' picked rows (LauncherExtras.qml): mint, a thick
-    // outline and the phone's hard shadow, so a pick reads the same in a row and in
-    // the grid, over the plain screen and over the wallpaper.
-    Component {
-        id: pickPlate
-
-        Item {
-            width: face.cellW
-            height: face.cellH
-            visible: face.gridPickShown
-
-            Rectangle {
-                x: 10
-                y: 8
-                width: parent.width - 16
-                height: parent.height - 12
-                radius: 26
-                color: mt.pLineShadow
-                antialiasing: true
-            }
-
-            Rectangle {
-                x: 6
-                y: 4
-                width: parent.width - 16
-                height: parent.height - 12
-                radius: 26
-                color: mt.accentMint
-                border.width: 4
-                border.color: mt.pLine
-                antialiasing: true
-            }
-        }
-    }
-
     // ===== one tile: the app's icon with the name under it =====
     // No button any more: no white cap, outline, ring, shadow or mint-to-cyan lit look,
     // and no chip behind the name. Just the icon and the name straight on the screen.
@@ -695,7 +630,7 @@ Item {
             required property var modelData
             required property int index
 
-            readonly property bool picked: face.gridPickShown && GridView.isCurrentItem
+            readonly property bool picked: face.keyNav && GridView.isCurrentItem
             readonly property bool lit: (area.containsMouse && !drawerWheel.gliding && !drawerGrid.moving) || picked
 
             // 0 = the resting look, 1 = the lit look; glides between them. Every frame
@@ -777,9 +712,8 @@ Item {
                 text: tile.modelData.name
                 // Over the wallpaper there is no chip to read on any more, so the name
                 // goes white with a thin dark edge; on the plain screen it is the usual ink.
-                // On the cursor plate it is the dark ink the mint keys use, wallpaper or not.
-                color: tile.picked ? mt.colBorder : (face.lcdOn ? "#ffffff" : mt.pInk)
-                style: face.lcdOn && !tile.picked ? Text.Outline : Text.Normal
+                color: face.lcdOn ? "#ffffff" : mt.pInk
+                style: face.lcdOn ? Text.Outline : Text.Normal
                 styleColor: Qt.rgba(0.10, 0.10, 0.22, 0.85)
                 font.family: mt.fontFamily
                 font.pixelSize: 18

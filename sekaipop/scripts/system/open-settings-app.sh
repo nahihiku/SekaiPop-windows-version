@@ -13,7 +13,6 @@
 kind="${1:-wifi}"
 
 have() { command -v "$1" >/dev/null 2>&1; }
-have_kcm() { have kcmshell6 && kcmshell6 --list 2>/dev/null | grep -qsE "^$1([[:space:]]|$)"; }
 
 say() {
     if have notify-send; then
@@ -36,9 +35,11 @@ term() { # term <command...>: run in the first terminal found
 
 case "$kind" in
     wifi)
-        # KDE's Wi-Fi & Networking page (plasma-nm) first. kcmshell6 returns 0 even
-        # when a requested KCM is missing, so verify it is listed before running.
-        have_kcm kcm_networkmanagement && exec kcmshell6 kcm_networkmanagement
+        # KDE's Wi-Fi & Networking page (plasma-nm) first. Not exec'd: if the page is not
+        # installed kcmshell6 stops with an error and the next choice is tried.
+        if have kcmshell6; then
+            kcmshell6 kcm_networkmanagement >/dev/null 2>&1 && exit 0
+        fi
         have nm-connection-editor && exec nm-connection-editor
         have gnome-control-center && exec gnome-control-center wifi
         have nmtui && term nmtui
@@ -47,7 +48,7 @@ case "$kind" in
     bluetooth)
         have blueman-manager && exec blueman-manager
         have blueberry && exec blueberry
-        have_kcm kcm_bluetooth && exec kcmshell6 kcm_bluetooth
+        have kcmshell6 && exec kcmshell6 kcm_bluetooth
         have gnome-control-center && exec gnome-control-center bluetooth
         have bluetui && term bluetui
         have bluetoothctl && term bluetoothctl

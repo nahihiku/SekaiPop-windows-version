@@ -3,10 +3,10 @@
 # One-time move from the old name ("pjsekai") to the new one ("sekaipop"). Safe to run again;
 # when there is nothing left of the old name it does nothing.
 #
-#   --dry-run     only say what would be moved or rewritten
-#   --skip-hypr   leave Hyprland configs and backups alone
+#   migrate-from-pjsekai.sh              do it
+#   migrate-from-pjsekai.sh --dry-run    only say what would be moved or rewritten
 #
-# install.sh runs it first thing. The Kitty helper recognises its old include separately.
+# install.sh runs it first thing. It is the only place in SekaiPop that still spells the old name.
 #
 # What it touches (everything is a plain rename of the word, nothing else is changed):
 #   1. the shell's own folders: settings, presets, scale, to-dos, notifications, dock layout,
@@ -19,7 +19,7 @@
 #      their own blocks and do not add a second one:
 #        ~/.config/hypr/pjsekai_overrides.lua, pjsekai_session.*, hyprland.lua / .conf and the
 #        lua files of the config, hypr.pjsekai-backup-* / hypr.pjsekai-previous (kept for
-#        install.sh --restore), foot, fuzzel, rofi, fish, gtk-3.0, gtk-4.0, qt5ct,
+#        install.sh --restore), kitty, foot, fuzzel, rofi, fish, gtk-3.0, gtk-4.0, qt5ct,
 #        qt6ct, matugen, kdeglobals(+backup), VS Code / VSCodium / Cursor settings.json,
 #        Vencord / vesktop / Equicord themes, the generated GTK theme and KDE colour scheme,
 #        and ~/.bashrc / ~/.zshrc lines.
@@ -27,14 +27,7 @@
 #   To undo a rewrite, swap the words back: sed -i 's/sekaipop/pjsekai/g' <file>.
 
 dry=0
-skip_hypr=0
-for option in "$@"; do
-    case "$option" in
-        --dry-run) dry=1 ;;
-        --skip-hypr) skip_hypr=1 ;;
-        *) echo "Unknown migration option: $option" >&2; exit 2 ;;
-    esac
-done
+[ "$1" = "--dry-run" ] && dry=1
 
 cfg="${XDG_CONFIG_HOME:-$HOME/.config}"
 state="${XDG_STATE_HOME:-$HOME/.local/state}"
@@ -121,26 +114,15 @@ for b in "$cfg" "$state" "$cache" "$data"; do move_dir "$b"; done
 # 2. paths and names inside the moved folders (config + state hold the JSON and scripts)
 for d in "$cfg/sekaipop" "$state/sekaipop"; do
     [ -d "$d" ] || continue
-    foreach rewrite "$d" -path "$state/sekaipop/kitty-backups" -prune -o -type f -size -4M -print
+    foreach rewrite "$d" -type f -size -4M
 done
 
 # 3. what was written into other programs' files ---------------------------------------------
-# Hyprland's backups, names and contents share the same migration scope.
-if [ "$skip_hypr" = 0 ]; then
-    for f in "$cfg"/hypr.pjsekai-backup-* "$cfg"/hypr.pjsekai-replaced-* \
-             "$cfg"/hypr.pjsekai-previous; do
-        [ -e "$f" ] && rename "$f"
-    done
-    if [ -d "$cfg/hypr" ]; then
-        foreach rename "$cfg/hypr" -maxdepth 3 -depth \( -name '*pjsekai*' -o -name '*Pjsekai*' \)
-        foreach rewrite "$cfg/hypr" -maxdepth 2 -type f \( -name '*.lua' -o -name '*.conf' \)
-    fi
-fi
-
-# Other programs' files still migrate in skip mode. Rename files before rewriting their references.
+# names first (a file called pjsekai-colors.conf, a folder hypr.pjsekai-backup-...), then contents
 if [ -d "$cfg" ]; then
-    [ -e "$cfg/kdeglobals.pjsekai-bak" ] && rename "$cfg/kdeglobals.pjsekai-bak"
-    for d in foot fuzzel rofi fish gtk-3.0 gtk-4.0 qt5ct qt6ct matugen; do
+    # top level of the config folder: hypr.pjsekai-backup-*, hypr.pjsekai-previous, kdeglobals.pjsekai-bak
+    for f in "$cfg"/*pjsekai* "$cfg"/*Pjsekai*; do [ -e "$f" ] && rename "$f"; done
+    for d in hypr kitty foot fuzzel rofi fish gtk-3.0 gtk-4.0 qt5ct qt6ct matugen; do
         [ -d "$cfg/$d" ] || continue
         foreach rename "$cfg/$d" -maxdepth 3 -depth \( -name '*pjsekai*' -o -name '*Pjsekai*' \)
     done
@@ -152,10 +134,11 @@ done
 
 # the contents
 if [ -d "$cfg" ]; then
-    for d in foot fuzzel rofi fish gtk-3.0 gtk-4.0 qt5ct qt6ct matugen; do
+    for d in kitty foot fuzzel rofi fish gtk-3.0 gtk-4.0 qt5ct qt6ct matugen; do
         [ -d "$cfg/$d" ] || continue
         foreach rewrite "$cfg/$d" -maxdepth 3 -type f -size -2M
     done
+    [ -d "$cfg/hypr" ] && foreach rewrite "$cfg/hypr" -maxdepth 2 -type f \( -name '*.lua' -o -name '*.conf' \)
     rewrite "$cfg/kdeglobals"
     rewrite "$cfg/kdeglobals.sekaipop-bak"
     for app in Code "Code - OSS" "Code - Insiders" VSCodium Cursor Windsurf; do

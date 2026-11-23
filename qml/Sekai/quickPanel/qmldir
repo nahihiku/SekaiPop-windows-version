@@ -1,0 +1,8 @@
+module Sekai.quickPanel
+QuickToggle 1.0 QuickToggle.qml
+VolumeSlider 1.0 VolumeSlider.qml
+GammaBrightnessSlider 1.0 GammaBrightnessSlider.qml
+PowerMenu 1.0 PowerMenu.qml
+PowerMenuScrim 1.0 PowerMenuScrim.qml
+NotificationCard 1.0 NotificationCard.qml
+QuickPanelFace 1.0 QuickPanelFace.qml
