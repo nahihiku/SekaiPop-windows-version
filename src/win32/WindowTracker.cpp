@@ -472,7 +472,8 @@ bool WindowTracker::isTrackableAppWindow(HWND hwnd) const {
         cls == QStringLiteral("Windows.UI.Core.CoreWindow") ||
         cls == QStringLiteral("EdgeUiInputTopWndClass") ||
         cls == QStringLiteral("DummyDWMListenerWindow") ||
-        cls == QStringLiteral("ForegroundStaging")) {
+        cls == QStringLiteral("ForegroundStaging") ||
+        cls == QStringLiteral("UkikuraNativeClass")) {
         return false;
     }
 
@@ -559,18 +560,25 @@ void WindowTracker::refresh() {
     QString nextIcon;
 
     if (fg && IsWindow(fg)) {
-        DWORD fgPid = 0;
-        GetWindowThreadProcessId(fg, &fgPid);
-        const QString cls = getWindowClassStr(fg);
-        if (fgPid != m_ownPid &&
-            cls != QStringLiteral("Progman") &&
-            cls != QStringLiteral("WorkerW") &&
-            cls != QStringLiteral("Shell_TrayWnd")) {
-            const QString t = getWindowTitleStr(fg);
+        // Resolve owned popups/dialogs to their trackable parent app window, and ignore
+        // non-taskbar toolwindow/overlay windows (such as Ukikura Dynamic Island or tray popups)
+        // so they never hijack activeWindow or appear as phantom running icons in the Dock.
+        HWND candidate = fg;
+        int guard = 0;
+        while (candidate && !isTrackableAppWindow(candidate) && guard++ < 8) {
+            HWND owner = GetWindow(candidate, GW_OWNER);
+            if (!owner || owner == candidate) {
+                candidate = nullptr;
+                break;
+            }
+            candidate = owner;
+        }
+        if (candidate && isTrackableAppWindow(candidate)) {
+            const QString t = getWindowTitleStr(candidate);
             if (!t.isEmpty()) {
-                nextHwnd = reinterpret_cast<quintptr>(fg);
+                nextHwnd = reinterpret_cast<quintptr>(candidate);
                 nextTitle = t;
-                nextApp = resolveAppNameForHwnd(fg);
+                nextApp = resolveAppNameForHwnd(candidate);
                 if (nextApp.isEmpty()) {
                     nextApp = nextTitle;
                 }

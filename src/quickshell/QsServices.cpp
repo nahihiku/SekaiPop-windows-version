@@ -551,9 +551,6 @@ void QsHyprland::syncFromTracker() {
 
     QsHyprlandWorkspace* activeWsObj = wsById.value(activeWsId, m_workspaceObjs.isEmpty() ? nullptr : m_workspaceObjs.first());
 
-    const QString activeApp = m_tracker ? m_tracker->activeApp() : QString();
-    const QString activeTitle = m_tracker ? m_tracker->activeTitle() : QString();
-
     // Virtual special workspace for minimized Windows apps ("special:dockmin")
     auto* minimizedWs = new QsHyprlandWorkspace(-99, primaryMon, this, QStringLiteral("special:dockmin"));
     m_workspaceObjs.append(minimizedWs);
@@ -584,8 +581,7 @@ void QsHyprland::syncFromTracker() {
         const bool isMin = wm.value(QStringLiteral("minimized")).toBool();
         const bool isMax = wm.value(QStringLiteral("maximized")).toBool();
         const int wsId = isMin ? -99 : wm.value(QStringLiteral("workspace"), activeWsId).toInt();
-        const bool isAct = !isMin && (wm.value(QStringLiteral("active")).toBool() ||
-                           (!activeTitle.isEmpty() && title == activeTitle));
+        const bool isAct = !isMin && wm.value(QStringLiteral("active")).toBool();
 
         QsHyprlandMonitor* winMon = monitorForName(scrName);
         QsHyprlandWorkspace* wsObj = wsById.value(wsId, activeWsObj);
@@ -610,17 +606,6 @@ void QsHyprland::syncFromTracker() {
         if (isAct && !m_activeToplevel) {
             m_activeToplevel = tl;
         }
-    }
-
-    if (!m_activeToplevel && !activeTitle.isEmpty()) {
-        auto* tl = new QsHyprlandToplevel(QStringLiteral("0x1"), activeTitle, activeApp, true, false, false, activeWsObj, primaryMon, this);
-        m_toplevelObjs.append(tl);
-        const QVariant tlVar = QVariant::fromValue(static_cast<QObject*>(tl));
-        toplevelsList.append(tlVar);
-        if (activeWsObj) {
-            winsPerWs[activeWsObj->id()].append(tlVar);
-        }
-        m_activeToplevel = tl;
     }
 
     const bool anyFullscreen = m_tracker && !m_tracker->fullscreenMonitors().isEmpty();
