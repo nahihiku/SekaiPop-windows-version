@@ -267,7 +267,7 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
     ensureDirJunction(stageQsDir + QStringLiteral("/shaders"), exeDir + QStringLiteral("/shaders"));
 
     // Fast fingerprint check to avoid re-reading 540+ QML files on every startup.
-    static constexpr const char* kStageVersion = "v35-win-uwp-surface-dock-fix";
+    static constexpr const char* kStageVersion = "v37-win-fast-edit-desktop-lean";
     QElapsedTimer stageTimer;
     stageTimer.start();
 
@@ -457,13 +457,322 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                         QStringLiteral("    NumberAnimation {\n        id: enterAnim"),
                         QStringLiteral("    Timer {\n"
                                        "        id: enterPrep\n"
-                                       "        interval: 32\n"
+                                       "        interval: 48\n"
                                        "        onTriggered: {\n"
                                        "            if (root.active)\n"
                                        "                enterAnim.restart()\n"
                                        "        }\n"
                                        "    }\n\n"
                                        "    NumberAnimation {\n        id: enterAnim")
+                    );
+                    text.replace(
+                        QStringLiteral("        duration: 560\n"
+                                       "        easing.type: Easing.OutBack\n"
+                                       "        easing.overshoot: 1.25"),
+                        QStringLiteral("        duration: 360\n"
+                                       "        easing.type: Easing.OutBack\n"
+                                       "        easing.overshoot: 1.12")
+                    );
+                    text.replace(
+                        QStringLiteral("        duration: 360\n"
+                                       "        easing.type: Easing.InOutCubic"),
+                        QStringLiteral("        duration: 260\n"
+                                       "        easing.type: Easing.OutCubic")
+                    );
+                }
+
+                // Lazy-load the 5 secondary tabs in EditTray.qml (Bar, Dock, Views, Theme, Presets = ~134 KB QML)
+                // so entering Edit Desktop only compiles/instantiates the active tab instead of all 6 boards at once.
+                if (fi.fileName() == QStringLiteral("EditTray.qml")) {
+                    text.replace(
+                        QStringLiteral(
+                            "            // ===== the bar tab =====\n"
+                            "            EditBarLayout {\n"
+                            "                id: barEditor\n"
+                            "                visible: win.tab === \"bar\"\n"
+                            "                anchors.left: tabs.right\n"
+                            "                anchors.leftMargin: 14\n"
+                            "                anchors.right: dividerRight.left\n"
+                            "                anchors.rightMargin: 14\n"
+                            "                anchors.top: parent.top\n"
+                            "                anchors.topMargin: 14\n"
+                            "                anchors.bottom: parent.bottom\n"
+                            "                anchors.bottomMargin: 14\n"
+                            "            }\n"
+                            "\n"
+                            "            // ===== the dock tab =====\n"
+                            "            EditDockBoard {\n"
+                            "                visible: win.tab === \"dock\"\n"
+                            "                anchors.left: tabs.right\n"
+                            "                anchors.leftMargin: 14\n"
+                            "                anchors.right: dividerRight.left\n"
+                            "                anchors.rightMargin: 14\n"
+                            "                anchors.top: parent.top\n"
+                            "                anchors.topMargin: 14\n"
+                            "                anchors.bottom: parent.bottom\n"
+                            "                anchors.bottomMargin: 14\n"
+                            "            }\n"
+                            "\n"
+                            "            // ===== the views tab =====\n"
+                            "            EditViewsBoard {\n"
+                            "                visible: win.tab === \"views\"\n"
+                            "                anchors.left: tabs.right\n"
+                            "                anchors.leftMargin: 14\n"
+                            "                anchors.right: dividerRight.left\n"
+                            "                anchors.rightMargin: 14\n"
+                            "                anchors.top: parent.top\n"
+                            "                anchors.topMargin: 14\n"
+                            "                anchors.bottom: parent.bottom\n"
+                            "                anchors.bottomMargin: 14\n"
+                            "            }\n"
+                            "\n"
+                            "            // ===== the theme tab =====\n"
+                            "            EditThemeBoard {\n"
+                            "                id: themeBoard\n"
+                            "                visible: win.tab === \"theme\"\n"
+                            "                anchors.left: tabs.right\n"
+                            "                anchors.leftMargin: 14\n"
+                            "                anchors.right: dividerRight.left\n"
+                            "                anchors.rightMargin: 14\n"
+                            "                anchors.top: parent.top\n"
+                            "                anchors.bottom: parent.bottom\n"
+                            "\n"
+                            "                // The Matugen controls' hex field took the keyboard; give it back.\n"
+                            "                onFinished: escKeys.forceActiveFocus()\n"
+                            "            }\n"
+                            "\n"
+                            "            // ===== the presets tab =====\n"
+                            "            EditPresetBoard {\n"
+                            "                visible: win.tab === \"presets\"\n"
+                            "                anchors.left: tabs.right\n"
+                            "                anchors.leftMargin: 14\n"
+                            "                anchors.right: dividerRight.left\n"
+                            "                anchors.rightMargin: 14\n"
+                            "                anchors.top: parent.top\n"
+                            "                anchors.bottom: parent.bottom\n"
+                            "\n"
+                            "                // The name field took the keyboard; give it back so Esc\n"
+                            "                // still leaves Edit Desktop.\n"
+                            "                onFinished: escKeys.forceActiveFocus()\n"
+                            "            }"
+                        ),
+                        QStringLiteral(
+                            "            // ===== lazy-loaded secondary tabs =====\n"
+                            "            Loader {\n"
+                            "                id: barEditor\n"
+                            "                property bool loaded: false\n"
+                            "                active: loaded || win.tab === \"bar\"\n"
+                            "                onActiveChanged: if (active) loaded = true\n"
+                            "                visible: win.tab === \"bar\"\n"
+                            "                source: active ? Qt.resolvedUrl(\"EditBarLayout.qml\") : \"\"\n"
+                            "                anchors.left: tabs.right\n"
+                            "                anchors.leftMargin: 14\n"
+                            "                anchors.right: dividerRight.left\n"
+                            "                anchors.rightMargin: 14\n"
+                            "                anchors.top: parent.top\n"
+                            "                anchors.topMargin: 14\n"
+                            "                anchors.bottom: parent.bottom\n"
+                            "                anchors.bottomMargin: 14\n"
+                            "            }\n"
+                            "\n"
+                            "            Loader {\n"
+                            "                property bool loaded: false\n"
+                            "                active: loaded || win.tab === \"dock\"\n"
+                            "                onActiveChanged: if (active) loaded = true\n"
+                            "                visible: win.tab === \"dock\"\n"
+                            "                source: active ? Qt.resolvedUrl(\"EditDockBoard.qml\") : \"\"\n"
+                            "                anchors.left: tabs.right\n"
+                            "                anchors.leftMargin: 14\n"
+                            "                anchors.right: dividerRight.left\n"
+                            "                anchors.rightMargin: 14\n"
+                            "                anchors.top: parent.top\n"
+                            "                anchors.topMargin: 14\n"
+                            "                anchors.bottom: parent.bottom\n"
+                            "                anchors.bottomMargin: 14\n"
+                            "            }\n"
+                            "\n"
+                            "            Loader {\n"
+                            "                property bool loaded: false\n"
+                            "                active: loaded || win.tab === \"views\"\n"
+                            "                onActiveChanged: if (active) loaded = true\n"
+                            "                visible: win.tab === \"views\"\n"
+                            "                source: active ? Qt.resolvedUrl(\"EditViewsBoard.qml\") : \"\"\n"
+                            "                anchors.left: tabs.right\n"
+                            "                anchors.leftMargin: 14\n"
+                            "                anchors.right: dividerRight.left\n"
+                            "                anchors.rightMargin: 14\n"
+                            "                anchors.top: parent.top\n"
+                            "                anchors.topMargin: 14\n"
+                            "                anchors.bottom: parent.bottom\n"
+                            "                anchors.bottomMargin: 14\n"
+                            "            }\n"
+                            "\n"
+                            "            Loader {\n"
+                            "                id: themeBoard\n"
+                            "                property bool loaded: false\n"
+                            "                active: loaded || win.tab === \"theme\"\n"
+                            "                onActiveChanged: if (active) loaded = true\n"
+                            "                visible: win.tab === \"theme\"\n"
+                            "                property bool tuning: false\n"
+                            "                onTuningChanged: if (item && item.tuning !== tuning) item.tuning = tuning\n"
+                            "                readonly property string screenName: (item && item.screenName) ? item.screenName : (win.screen ? win.screen.name : \"\")\n"
+                            "                source: active ? Qt.resolvedUrl(\"EditThemeBoard.qml\") : \"\"\n"
+                            "                onLoaded: if (item) item.tuning = tuning\n"
+                            "                anchors.left: tabs.right\n"
+                            "                anchors.leftMargin: 14\n"
+                            "                anchors.right: dividerRight.left\n"
+                            "                anchors.rightMargin: 14\n"
+                            "                anchors.top: parent.top\n"
+                            "                anchors.bottom: parent.bottom\n"
+                            "                Connections {\n"
+                            "                    target: themeBoard.item\n"
+                            "                    ignoreUnknownSignals: true\n"
+                            "                    function onFinished() { escKeys.forceActiveFocus() }\n"
+                            "                    function onTuningChanged() { if (themeBoard.item) themeBoard.tuning = themeBoard.item.tuning }\n"
+                            "                }\n"
+                            "            }\n"
+                            "\n"
+                            "            Loader {\n"
+                            "                id: presetBoard\n"
+                            "                property bool loaded: false\n"
+                            "                active: loaded || win.tab === \"presets\"\n"
+                            "                onActiveChanged: if (active) loaded = true\n"
+                            "                visible: win.tab === \"presets\"\n"
+                            "                source: active ? Qt.resolvedUrl(\"EditPresetBoard.qml\") : \"\"\n"
+                            "                anchors.left: tabs.right\n"
+                            "                anchors.leftMargin: 14\n"
+                            "                anchors.right: dividerRight.left\n"
+                            "                anchors.rightMargin: 14\n"
+                            "                anchors.top: parent.top\n"
+                            "                anchors.bottom: parent.bottom\n"
+                            "                Connections {\n"
+                            "                    target: presetBoard.item\n"
+                            "                    ignoreUnknownSignals: true\n"
+                            "                    function onFinished() { escKeys.forceActiveFocus() }\n"
+                            "                }\n"
+                            "            }"
+                        )
+                    );
+                }
+
+                // Lazy-load EditMatugenControls (35 KB + Canvas + infinite animations) only when tuning is opened.
+                if (fi.fileName() == QStringLiteral("EditThemeBoard.qml")) {
+                    text.replace(
+                        QStringLiteral(
+                            "    // The Matugen controls, in the row's place while tuning.\n"
+                            "    EditMatugenControls {\n"
+                            "        anchors.fill: parent\n"
+                            "        visible: root.tuning\n"
+                            "        onBack: root.tuning = false\n"
+                            "        onFinished: root.finished()\n"
+                            "    }"
+                        ),
+                        QStringLiteral(
+                            "    // Lazy-loaded Matugen controls: zero QML/Canvas cost until tuning is opened.\n"
+                            "    Loader {\n"
+                            "        id: matugenLoader\n"
+                            "        anchors.fill: parent\n"
+                            "        active: root.tuning\n"
+                            "        visible: root.tuning\n"
+                            "        source: active ? Qt.resolvedUrl(\"EditMatugenControls.qml\") : \"\"\n"
+                            "        Connections {\n"
+                            "            target: matugenLoader.item\n"
+                            "            ignoreUnknownSignals: true\n"
+                            "            function onBack() { root.tuning = false }\n"
+                            "            function onFinished() { root.finished() }\n"
+                            "        }\n"
+                            "    }"
+                        )
+                    );
+                }
+
+                // Replace double-FBO layer.enabled + MultiEffect rounded masks in EditPresetBoard with hardware RoundClip.
+                if (fi.fileName() == QStringLiteral("EditPresetBoard.qml")) {
+                    text.replace(
+                        QStringLiteral(
+                            "                    Item {\n"
+                            "                        id: photoClip\n"
+                            "                        x: frame.border.width\n"
+                            "                        y: frame.border.width\n"
+                            "                        width: frame.width - frame.border.width * 2\n"
+                            "                        height: frame.height - frame.border.width * 2\n"
+                            "\n"
+                            "                        layer.enabled: true\n"
+                            "                        layer.smooth: true\n"
+                            "                        layer.textureSize: Qt.size(Math.max(1, Math.ceil(width * 2)),\n"
+                            "                                                   Math.max(1, Math.ceil(height * 2)))\n"
+                            "                        layer.effect: MultiEffect {\n"
+                            "                            maskEnabled: true\n"
+                            "                            maskSource: photoMask\n"
+                            "                        }\n"
+                            "\n"
+                            "                        Image {\n"
+                            "                            id: photo\n"
+                            "                            anchors.fill: parent\n"
+                            "                            source: tile.picture\n"
+                            "                            fillMode: Image.PreserveAspectCrop\n"
+                            "                            asynchronous: true\n"
+                            "                            cache: false\n"
+                            "                            smooth: true\n"
+                            "                            sourceSize.width: 320\n"
+                            "                            opacity: status === Image.Ready ? 1 : 0\n"
+                            "\n"
+                            "                            Behavior on opacity {\n"
+                            "                                NumberAnimation {\n"
+                            "                                    duration: 180\n"
+                            "                                }\n"
+                            "                            }\n"
+                            "                        }\n"
+                            "                    }\n"
+                            "\n"
+                            "                    Item {\n"
+                            "                        id: photoMask\n"
+                            "                        x: photoClip.x\n"
+                            "                        y: photoClip.y\n"
+                            "                        width: photoClip.width\n"
+                            "                        height: photoClip.height\n"
+                            "                        visible: false\n"
+                            "                        layer.enabled: true\n"
+                            "                        layer.smooth: true\n"
+                            "                        layer.textureSize: Qt.size(Math.max(1, Math.ceil(width * 2)),\n"
+                            "                                                   Math.max(1, Math.ceil(height * 2)))\n"
+                            "\n"
+                            "                        Rectangle {\n"
+                            "                            anchors.fill: parent\n"
+                            "                            radius: 7\n"
+                            "                            color: \"black\"\n"
+                            "                            antialiasing: true\n"
+                            "                        }\n"
+                            "                    }"
+                        ),
+                        QStringLiteral(
+                            "                    RoundClip {\n"
+                            "                        id: photoClip\n"
+                            "                        x: frame.border.width\n"
+                            "                        y: frame.border.width\n"
+                            "                        width: frame.width - frame.border.width * 2\n"
+                            "                        height: frame.height - frame.border.width * 2\n"
+                            "                        radius: 7\n"
+                            "\n"
+                            "                        Image {\n"
+                            "                            id: photo\n"
+                            "                            anchors.fill: parent\n"
+                            "                            source: tile.picture\n"
+                            "                            fillMode: Image.PreserveAspectCrop\n"
+                            "                            asynchronous: true\n"
+                            "                            cache: false\n"
+                            "                            smooth: true\n"
+                            "                            sourceSize.width: 320\n"
+                            "                            opacity: status === Image.Ready ? 1 : 0\n"
+                            "\n"
+                            "                            Behavior on opacity {\n"
+                            "                                NumberAnimation {\n"
+                            "                                    duration: 180\n"
+                            "                                }\n"
+                            "                            }\n"
+                            "                        }\n"
+                            "                    }"
+                        )
                     );
                 }
 
@@ -742,7 +1051,8 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                     );
                 }
 
-                // Stagger EditPreview GPU readbacks after enterAnim finishes and never grab mid-drag.
+                // Stagger EditPreview GPU readbacks after enterAnim finishes, cap to thumbnail size (<=220x140),
+                // and capture once per Edit Desktop session instead of stalling D3D11 every 2.5s forever.
                 if (fi.fileName() == QStringLiteral("EditPreview.qml")) {
                     text.replace(
                         QStringLiteral(
@@ -764,47 +1074,66 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                             "        const t = root.target\n"
                             "        if (!t || !t.visible || t.width < 2 || t.height < 2)\n"
                             "            return\n"
-                            "        const k = Math.max(1, root.pixelRatio)"
+                            "        const k = Math.max(1, root.pixelRatio)\n"
+                            "        t.grabToImage(function (result) {\n"
+                            "            if (!result || !root.running)\n"
+                            "                return\n"
+                            "            root.shot = result\n"
+                            "            EditMode.setPreview(root.widgetId, result.url.toString(), t.width, t.height)\n"
+                            "        }, Qt.size(Math.max(1, Math.round(t.width * k)), Math.max(1, Math.round(t.height * k))))\n"
+                            "    }"
                         ),
                         QStringLiteral(
                             "    property bool didInitialSnap: false\n"
-                            "    property int initialDelay: 650\n"
+                            "    property int initialDelay: 520\n"
                             "\n"
                             "    function computeDelay(alreadyOpen) {\n"
                             "        let h = 0\n"
                             "        for (let i = 0; i < root.widgetId.length; i++)\n"
                             "            h = (h * 31 + root.widgetId.charCodeAt(i)) & 0x7fffffff\n"
-                            "        return alreadyOpen ? (40 + (h % 8) * 45) : (620 + (h % 8) * 85)\n"
+                            "        return alreadyOpen ? (40 + (h % 10) * 55) : (480 + (h % 10) * 75)\n"
                             "    }\n"
                             "\n"
-                            "    interval: root.didInitialSnap ? 2500 : root.initialDelay\n"
-                            "    repeat: true\n"
-                            "    running: root.wanted && root.target !== null && root.widgetId !== \"\"\n"
+                            "    interval: root.didInitialSnap ? 12000 : root.initialDelay\n"
+                            "    repeat: !root.didInitialSnap\n"
+                            "    running: root.wanted && root.target !== null && root.widgetId !== \"\" && !root.didInitialSnap\n"
                             "    triggeredOnStart: false\n"
                             "\n"
                             "    onTriggered: root.snap()\n"
                             "\n"
-                            "    onRunningChanged: {\n"
-                            "        if (root.running) {\n"
-                            "            root.didInitialSnap = false\n"
-                            "            root.initialDelay = root.computeDelay(EditMode.progress >= 0.95)\n"
-                            "        } else {\n"
-                            "            root.didInitialSnap = false\n"
-                            "            if (!EditMode.active) {\n"
-                            "                EditMode.setPreview(root.widgetId, \"\", 0, 0)\n"
-                            "                root.shot = null\n"
+                            "    onWantedChanged: {\n"
+                            "        if (root.wanted) {\n"
+                            "            if (!root.shot) {\n"
+                            "                root.didInitialSnap = false\n"
+                            "                root.initialDelay = root.computeDelay(EditMode.progress >= 0.95)\n"
                             "            }\n"
+                            "        } else if (!EditMode.active) {\n"
+                            "            root.didInitialSnap = false\n"
+                            "            EditMode.setPreview(root.widgetId, \"\", 0, 0)\n"
+                            "            root.shot = null\n"
                             "        }\n"
                             "    }\n"
                             "\n"
                             "    function snap() {\n"
-                            "        if (EditMode.progress < 0.95 || EditGrid.phase === \"drag\" || EditMode.dragId !== \"\")\n"
+                            "        if (EditMode.progress < 0.95 || EditGrid.phase === \"drag\" || EditMode.dragId !== \"\") {\n"
+                            "            root.initialDelay = 250\n"
                             "            return\n"
+                            "        }\n"
                             "        const t = root.target\n"
                             "        if (!t || !t.visible || t.width < 2 || t.height < 2)\n"
                             "            return\n"
                             "        root.didInitialSnap = true\n"
-                            "        const k = Math.max(1, root.pixelRatio)"
+                            "        const k = Math.max(1, root.pixelRatio)\n"
+                            "        const capScale = Math.min(k, 220 / Math.max(1, t.width), 140 / Math.max(1, t.height))\n"
+                            "        const gw = Math.max(2, Math.round(t.width * capScale))\n"
+                            "        const gh = Math.max(2, Math.round(t.height * capScale))\n"
+                            "        t.grabToImage(function (result) {\n"
+                            "            if (!result || !EditMode.active)\n"
+                            "                return\n"
+                            "            root.shot = result\n"
+                            "            EditMode.setPreview(root.widgetId, result.url.toString(), t.width, t.height)\n"
+                            "        }, Qt.size(gw, gh))\n"
+                            "    }"
                         )
                     );
                 }
@@ -1353,18 +1682,65 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                     text.replace(
                         QStringLiteral("    DesktopMenu {}\n    EditTray {}\n    // A widget pulled up off the shelf follows the pointer in a window of its own.\n    EditDragGhost {}"),
                         QStringLiteral("    LazyLoader { active: EditMode.menuOpen; source: Qt.resolvedUrl(\"modules/sekai/desktopMenu/DesktopMenu.qml\") }\n"
-                                       "    LazyLoader { active: EditMode.screenName !== \"\"; source: Qt.resolvedUrl(\"modules/sekai/editMode/EditTray.qml\") }\n"
+                                       "    LazyLoader { property bool warmed: false; active: warmed || EditMode.screenName !== \"\"; onActiveChanged: if (active) warmed = true; source: Qt.resolvedUrl(\"modules/sekai/editMode/EditTray.qml\") }\n"
                                        "    LazyLoader { active: EditMode.dragId !== \"\"; source: Qt.resolvedUrl(\"modules/sekai/editMode/EditDragGhost.qml\") }")
                     );
                     text.replace(
-                        QStringLiteral("                EditGuides {}"),
-                        QStringLiteral("                delegate: LazyLoader {\n"
+                        QStringLiteral("    LazyLoader {\n        active: EditMode.screenName !== \"\"\n\n        Scope {\n            Variants {\n                model: Quickshell.screens\n                EditGuides {}\n            }\n        }\n    }"),
+                        QStringLiteral("    LazyLoader {\n"
+                                       "        active: EditMode.screenName !== \"\" && (EditGrid.phase !== \"idle\" || EditGrid.gridAlwaysOn)\n"
+                                       "        Scope {\n"
+                                       "            Variants {\n"
+                                       "                model: Quickshell.screens\n"
+                                       "                delegate: LazyLoader {\n"
                                        "                    id: editGuideItemLoader\n"
                                        "                    required property var modelData\n"
                                        "                    active: true\n"
                                        "                    source: Qt.resolvedUrl(\"modules/sekai/editMode/EditGuides.qml\")\n"
                                        "                    initialProperties: ({ modelData: editGuideItemLoader.modelData })\n"
-                                       "                }")
+                                       "                }\n"
+                                       "            }\n"
+                                       "        }\n"
+                                       "    }")
+                    );
+                    // Never force-compile & allocate full-screen 1920x1080 D3D11 windows for DISABLED
+                    // desktop widgets just to take a shelf thumbnail on Edit Desktop enter; disabled
+                    // widgets already display their crisp Material icon in EditTraySlot until added.
+                    text.replace(
+                        QStringLiteral("((TodoService.loaded && TodoService.shown && !todoGate.gone) || EditMode.active || shellRoot.todoResetRequested)"),
+                        QStringLiteral("((TodoService.loaded && TodoService.shown && !todoGate.gone) || shellRoot.todoResetRequested)")
+                    );
+                    text.replace(
+                        QStringLiteral("((ClockService.loaded && ClockService.shown && !clockGate.gone) || EditMode.active || shellRoot.clockResetRequested)"),
+                        QStringLiteral("((ClockService.loaded && ClockService.shown && !clockGate.gone) || shellRoot.clockResetRequested)")
+                    );
+                    text.replace(
+                        QStringLiteral("((VisualizerService.loaded && VisualizerService.shown && !visualizerGate.gone) || EditMode.active || shellRoot.visualizerResetRequested)"),
+                        QStringLiteral("((VisualizerService.loaded && VisualizerService.shown && !visualizerGate.gone) || shellRoot.visualizerResetRequested)")
+                    );
+                    text.replace(
+                        QStringLiteral("((UserCardService.loaded && UserCardService.shown && !usercardGate.gone) || EditMode.active || shellRoot.userCardResetRequested)"),
+                        QStringLiteral("((UserCardService.loaded && UserCardService.shown && !usercardGate.gone) || shellRoot.userCardResetRequested)")
+                    );
+                    text.replace(
+                        QStringLiteral("((WeatherCardService.loaded && WeatherCardService.shown && !weathercardGate.gone) || EditMode.active || shellRoot.weatherCardResetRequested)"),
+                        QStringLiteral("((WeatherCardService.loaded && WeatherCardService.shown && !weathercardGate.gone) || shellRoot.weatherCardResetRequested)")
+                    );
+                    text.replace(
+                        QStringLiteral("((CalendarCardService.loaded && CalendarCardService.shown && !calendarcardGate.gone) || EditMode.active || shellRoot.calendarCardResetRequested)"),
+                        QStringLiteral("((CalendarCardService.loaded && CalendarCardService.shown && !calendarcardGate.gone) || shellRoot.calendarCardResetRequested)")
+                    );
+                    text.replace(
+                        QStringLiteral("((PaletteService.loaded && PaletteService.shown && !palettecardGate.gone) || EditMode.active || shellRoot.paletteCardResetRequested)"),
+                        QStringLiteral("((PaletteService.loaded && PaletteService.shown && !palettecardGate.gone) || shellRoot.paletteCardResetRequested)")
+                    );
+                    text.replace(
+                        QStringLiteral("((LyricsService.loaded && LyricsService.shown && !lyricsGate.gone) || EditMode.active || shellRoot.lyricsResetRequested)"),
+                        QStringLiteral("((LyricsService.loaded && LyricsService.shown && !lyricsGate.gone) || shellRoot.lyricsResetRequested)")
+                    );
+                    text.replace(
+                        QStringLiteral("((plg.st.shown && !pluginGate.gone) || EditMode.active)"),
+                        QStringLiteral("(plg.st.shown && !pluginGate.gone)")
                     );
 
                     // Replace legacy duplicate corner phone (LauncherPhone) with a lightweight shim
@@ -1980,10 +2356,16 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                         QStringLiteral("    readonly property real boxPad: Math.ceil((0.12 * Math.max(card.width, card.height) + 16) * win.uiScale)"),
                         QStringLiteral("    readonly property real boxPad: Math.ceil(((win.isBand ? 0 : 0.12 * Math.max(card.width, card.height)) + 16) * win.uiScale)")
                     );
-                    // Balanced performance mode at ~60fps (16ms gap) stays silky smooth with swapInterval=0.
+                    // Balanced performance mode at ~60fps (16ms gap) stays silky smooth with swapInterval=0,
+                    // while pausing/throttling the full-screen 1080p demo shader during Edit Desktop so
+                    // Intel iGPUs stay responsive under QSG_RENDER_LOOP=basic.
                     text.replace(
                         QStringLiteral("        frameGap: gate.dimmed ? 0.1 : (VisualizerService.perf >= 2 ? 0.05 : (VisualizerService.perf === 1 ? 0.028 : 0))"),
-                        QStringLiteral("        frameGap: gate.dimmed ? 0.1 : (VisualizerService.perf >= 2 ? 0.05 : (VisualizerService.perf === 1 ? 0.016 : 0))")
+                        QStringLiteral("        frameGap: (EditMode.progress > 0.01 && EditMode.progress < 0.99) ? 1.0 : (EditMode.active ? 0.125 : (gate.dimmed ? 0.1 : (VisualizerService.perf >= 2 ? 0.05 : (VisualizerService.perf === 1 ? 0.016 : 0))))")
+                    );
+                    text.replace(
+                        QStringLiteral("        frameGap: gate.dimmed ? Math.max(0.1, VisualizerService.frameGap) : VisualizerService.frameGap"),
+                        QStringLiteral("        frameGap: (EditMode.progress > 0.01 && EditMode.progress < 0.99) ? 1.0 : (EditMode.active ? 0.125 : (gate.dimmed ? Math.max(0.1, VisualizerService.frameGap) : VisualizerService.frameGap))")
                     );
                     // Only keep the 512x512 cover FBO live when actually rendering the Ring style.
                     text.replace(
