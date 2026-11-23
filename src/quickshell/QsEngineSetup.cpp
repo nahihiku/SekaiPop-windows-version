@@ -267,7 +267,7 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
     ensureDirJunction(stageQsDir + QStringLiteral("/shaders"), exeDir + QStringLiteral("/shaders"));
 
     // Fast fingerprint check to avoid re-reading 540+ QML files on every startup.
-    static constexpr const char* kStageVersion = "v42-win-ukikura-notch-integration";
+    static constexpr const char* kStageVersion = "v43-win-dark-pill-narrow-bar-tooltip";
     QElapsedTimer stageTimer;
     stageTimer.start();
 
@@ -515,6 +515,77 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                     );
                 }
 
+                // Qt 6.8 QQuickRectangle drops gradient rendering when Rectangle.color is "transparent"
+                // or gradient is assigned via a ternary returning null, causing gradient Pills (ActiveWindow,
+                // MediaPill, UserCard) to reveal mt.ringWhite behind them (unreadable dark-on-dark in Darker mode).
+                // Render fillGradient on a dedicated opaque fillGradLayer behind fill's content.
+                if (fi.fileName() == QStringLiteral("Pill.qml")) {
+                    text.replace(
+                        QStringLiteral(
+                            "        Rectangle {\n"
+                            "            id: fill\n"
+                            "            anchors.fill: face\n"
+                            "            anchors.margins: root.capsule ? 0 : root.ringWidth\n"
+                            "            radius: root.capsule ? Math.min(width, height) / 2 : Math.max(0, root.cornerRadius - root.ringWidth)\n"
+                            "            color: root.bare ? \"transparent\"\n"
+                            "                : (root.capsule\n"
+                            "                    ? (root.capKeepsFill ? root.fillColor : mt.capChip)\n"
+                            "                    : (root.capRim ? mt.capBody\n"
+                            "                        : (root.fillGradient ? \"transparent\" : root.fillColor)))\n"
+                            "            gradient: (root.capsule || root.capRim || root.bare) ? null : root.fillGradient"
+                        ),
+                        QStringLiteral(
+                            "        Rectangle {\n"
+                            "            id: fillGradLayer\n"
+                            "            visible: root.fillGradient !== null && !root.capsule && !root.capRim && !root.bare\n"
+                            "            anchors.fill: fill\n"
+                            "            radius: fill.radius\n"
+                            "            color: \"#ffffff\"\n"
+                            "            gradient: root.fillGradient\n"
+                            "            antialiasing: true\n"
+                            "        }\n"
+                            "\n"
+                            "        Rectangle {\n"
+                            "            id: fill\n"
+                            "            anchors.fill: face\n"
+                            "            anchors.margins: root.capsule ? 0 : root.ringWidth\n"
+                            "            radius: root.capsule ? Math.min(width, height) / 2 : Math.max(0, root.cornerRadius - root.ringWidth)\n"
+                            "            color: (root.bare || fillGradLayer.visible) ? \"transparent\"\n"
+                            "                : (root.capsule\n"
+                            "                    ? (root.capKeepsFill ? root.fillColor : mt.capChip)\n"
+                            "                    : (root.capRim ? mt.capBody : root.fillColor))"
+                        )
+                    );
+                }
+
+                // Allow DiscordPill on flat horizontal bars to respect dynamic maxWidth from Status_Bar
+                // so it elides cleanly instead of overlapping UtilButtons on narrow/DPI-scaled monitors.
+                if (fi.fileName() == QStringLiteral("DiscordPill.qml")) {
+                    text.replace(
+                        QStringLiteral("    property bool vertical: false"),
+                        QStringLiteral("    property bool vertical: false\n"
+                                       "    property real maxWidth: 260")
+                    );
+                    text.replace(
+                        QStringLiteral(
+                            "            Text {\n"
+                            "                anchors.verticalCenter: parent.verticalCenter\n"
+                            "                width: Math.min(implicitWidth, 150)\n"
+                            "                text: root.labelText\n"
+                            "                elide: Text.ElideRight"
+                        ),
+                        QStringLiteral(
+                            "            Text {\n"
+                            "                anchors.verticalCenter: parent.verticalCenter\n"
+                            "                readonly property real capTextW: Math.max(0, Math.min(150, root.maxWidth - (2 * pill.ringWidth + 14 + (root.shownAuth ? 18 : root.stackWidth) + (!root.shownAuth ? 32 : 7))))\n"
+                            "                width: Math.min(implicitWidth, capTextW)\n"
+                            "                visible: capTextW >= 18\n"
+                            "                text: root.labelText\n"
+                            "                elide: Text.ElideRight"
+                        )
+                    );
+                }
+
                 // Monitor 2 Bar parity on Windows DPI scaling (e.g. 1920x1080 @ 125% = 864 logical px):
                 // lower vertical tighterV threshold from 880 to 700 so Weather, CPU/RAM, and plugins
                 // stay visible identically across Monitor 1 (1.0x) and Monitor 2 (1.25x / 1.5x).
@@ -524,6 +595,10 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                     text.replace(
                         QStringLiteral("readonly property bool tighterV: status_Bar.vertical && content.height < 880"),
                         QStringLiteral("readonly property bool tighterV: status_Bar.vertical && content.height < 700")
+                    );
+                    text.replace(
+                        QStringLiteral("readonly property bool utilFlyout: status_Bar.vertical && (status_Bar.tightV || status_Bar.utilFlyoutAlways)"),
+                        QStringLiteral("readonly property bool utilFlyout: status_Bar.vertical ? (status_Bar.tightV || status_Bar.utilFlyoutAlways) : status_Bar.tightH")
                     );
                     text.replace(
                         QStringLiteral(
@@ -595,10 +670,10 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                             "        }\n"
                             "        return res\n"
                             "    }\n"
-                            "    function centerSideWidth(onRight) {\n"
+                            "    function zoneFixedWidth(zone, skipId) {\n"
                             "        let w = 0\n"
-                            "        for (const id of (status_Bar.layout[\"center\"] || [])) {\n"
-                            "            if (id === \"media\" || (!!status_Bar.centerRightSet[id]) !== onRight)\n"
+                            "        for (const id of (status_Bar.layout[zone] || [])) {\n"
+                            "            if (id === \"media\" || id === \"discord\" || id === skipId)\n"
                             "                continue\n"
                             "            for (const it of status_Bar.itemsOf(id)) {\n"
                             "                if (it.visible)\n"
@@ -607,18 +682,83 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                             "        }\n"
                             "        return w > 0 ? Math.max(0, w - status_Bar.zoneGap) : 0\n"
                             "    }\n"
+                            "    function centerSideWidth(onRight, includeDiscordEst) {\n"
+                            "        let w = 0\n"
+                            "        for (const id of (status_Bar.layout[\"center\"] || [])) {\n"
+                            "            if (id === \"media\" || (!!status_Bar.centerRightSet[id]) !== onRight)\n"
+                            "                continue\n"
+                            "            if (id === \"discord\") {\n"
+                            "                if (includeDiscordEst && status_Bar.shows(\"discord\") && (status_Bar.discordInCall || status_Bar.discordNeedsAuth || status_Bar.discordAuthorizing))\n"
+                            "                    w += 235 + status_Bar.zoneGap\n"
+                            "                continue\n"
+                            "            }\n"
+                            "            for (const it of status_Bar.itemsOf(id)) {\n"
+                            "                if (it.visible)\n"
+                            "                    w += status_Bar.slotWidth(it) + status_Bar.zoneGap\n"
+                            "            }\n"
+                            "        }\n"
+                            "        return w > 0 ? Math.max(0, w - status_Bar.zoneGap) : 0\n"
+                            "    }\n"
+                            "    // On narrow/DPI-scaled horizontal Top Bars (e.g. 1536px @ 125% with Ukikura + Discord),\n"
+                            "    // automatically fold UtilButtons into its single compact tools flyout button to prevent overlap.\n"
+                            "    readonly property bool tightH: {\n"
+                            "        if (status_Bar.vertical || !status_Bar.ukikuraActive || !status_Bar.shows(\"utilButtons\"))\n"
+                            "            return false\n"
+                            "        const uz = status_Bar.zoneMap[\"utilButtons\"]\n"
+                            "        if (uz !== \"right\" && uz !== \"left\")\n"
+                            "            return false\n"
+                            "        const half = content.width / 2\n"
+                            "        const onRight = (uz === \"right\")\n"
+                            "        const otherSide = status_Bar.zoneFixedWidth(uz, \"utilButtons\")\n"
+                            "        const expandedUtil = 264 + (otherSide > 0 ? status_Bar.zoneGap : 0)\n"
+                            "        const centerNeed = status_Bar.centerSideWidth(onRight, true)\n"
+                            "        const halfGap = Math.max(108, Math.min(205, status_Bar.ukikuraGap / 2))\n"
+                            "        return (otherSide + expandedUtil + centerNeed + halfGap + 16) > half\n"
+                            "    }\n"
                             "    readonly property real effectiveUkikuraGap: {\n"
                             "        if (!status_Bar.ukikuraActive)\n"
                             "            return 0\n"
                             "        const half = content.width / 2\n"
-                            "        const rightFixed = Math.max(0, status_Bar.othersWidth(\"right\") - status_Bar.zoneGap)\n"
-                            "        const leftFixed = Math.max(0, status_Bar.othersWidth(\"left\") - status_Bar.zoneGap)\n"
-                            "        const rightSideRoom = half - rightFixed - status_Bar.centerSideWidth(true) - 10\n"
-                            "        const leftSideRoom = half - leftFixed - status_Bar.centerSideWidth(false) - 10\n"
+                            "        const rightFixed = status_Bar.zoneFixedWidth(\"right\", \"\")\n"
+                            "        const leftFixed = status_Bar.zoneFixedWidth(\"left\", \"\")\n"
+                            "        const rightSideRoom = half - rightFixed - status_Bar.centerSideWidth(true, true) - 10\n"
+                            "        const leftSideRoom = half - leftFixed - status_Bar.centerSideWidth(false, true) - 10\n"
                             "        const safeRoom = 2 * Math.max(94, Math.min(rightSideRoom, leftSideRoom))\n"
                             "        const maxCap = Math.min(410, Math.min(content.width * 0.24, safeRoom))\n"
                             "        return Math.max(status_Bar.zoneGap, Math.min(status_Bar.ukikuraGap, maxCap))\n"
+                            "    }\n"
+                            "    readonly property real maxDiscordWidth: {\n"
+                            "        if (status_Bar.vertical)\n"
+                            "            return 260\n"
+                            "        const half = content.width / 2\n"
+                            "        const dz = status_Bar.zoneMap[\"discord\"]\n"
+                            "        let room = 260\n"
+                            "        if (status_Bar.ukikuraActive && dz === \"center\") {\n"
+                            "            const onRight = !!status_Bar.centerRightSet[\"discord\"]\n"
+                            "            const edgeFixed = status_Bar.zoneFixedWidth(onRight ? \"right\" : \"left\", \"\")\n"
+                            "            const sibFixed = status_Bar.centerSideWidth(onRight, false)\n"
+                            "            const sibGap = sibFixed > 0 ? status_Bar.zoneGap : 0\n"
+                            "            room = half - status_Bar.effectiveUkikuraGap / 2 - edgeFixed - sibFixed - sibGap - 16\n"
+                            "        } else if (dz === \"right\") {\n"
+                            "            const edgeFixed = status_Bar.zoneFixedWidth(\"right\", \"\")\n"
+                            "            const centerEdge = status_Bar.ukikuraActive\n"
+                            "                ? (status_Bar.effectiveUkikuraGap / 2 + status_Bar.centerSideWidth(true, false))\n"
+                            "                : (centerGroup.width / 2)\n"
+                            "            room = half - centerEdge - edgeFixed - 18\n"
+                            "        }\n"
+                            "        return Math.max(96, Math.min(260, room))\n"
                             "    }"
+                        )
+                    );
+                    text.replace(
+                        QStringLiteral(
+                            "            id: discordPill\n"
+                            "            parent: status_Bar.zoneItem(\"discord\")"
+                        ),
+                        QStringLiteral(
+                            "            id: discordPill\n"
+                            "            parent: status_Bar.zoneItem(\"discord\")\n"
+                            "            maxWidth: status_Bar.maxDiscordWidth"
                         )
                     );
                     text.replace(
@@ -668,7 +808,7 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                             "        } else if (status_Bar.ukikuraActive) {\n"
                             "            const onRight = !!status_Bar.centerRightSet[\"media\"]\n"
                             "            const sideEdge = onRight ? rightGroup.width : leftGroup.width\n"
-                            "            room = half - status_Bar.effectiveUkikuraGap / 2 - sideEdge - 14 - status_Bar.centerSideWidth(onRight)\n"
+                            "            room = half - status_Bar.effectiveUkikuraGap / 2 - sideEdge - 14 - status_Bar.centerSideWidth(onRight, true)\n"
                             "        } else {\n"
                             "            room = 2 * (Math.min(half - leftGroup.width, half - rightGroup.width) - 12)\n"
                             "                - status_Bar.othersWidth(\"center\")\n"

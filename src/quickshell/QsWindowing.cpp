@@ -75,6 +75,22 @@ QRectF QsRegion::ownRect() const {
     return QRectF();
 }
 
+bool QsRegion::isEmpty() const {
+    if (!ownRect().isEmpty()) {
+        return false;
+    }
+    for (const QsRegion* child : std::as_const(m_regions)) {
+        if (!child) {
+            continue;
+        }
+        if ((child->intersection() == Intersection::Combine || child->intersection() == Intersection::Xor) &&
+            !child->isEmpty()) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool QsRegion::coversWholeRect(const QSizeF& winSize) const {
     if (winSize.width() <= 1.0 || winSize.height() <= 1.0) {
         return false;
@@ -675,15 +691,9 @@ QsPopupWindow::QsPopupWindow(QWindow* parent)
             m_releaseTimer.stop();
             setPersistentSceneGraph(true);
             syncPlacement();
+            syncMaskStyles();
             HWND hwnd = reinterpret_cast<HWND>(winId());
             if (hwnd) {
-                const LONG_PTR curEx = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-                LONG_PTR exStyle = curEx;
-                exStyle |= WS_EX_TOOLWINDOW;
-                exStyle &= ~WS_EX_APPWINDOW;
-                if (exStyle != curEx) {
-                    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, exStyle);
-                }
                 SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                              SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
             }
@@ -711,8 +721,42 @@ void QsPopupWindow::setImplicitHeight(qreal h) {
 
 void QsPopupWindow::setMask(QsRegion* r) {
     if (m_mask != r) {
+        if (m_mask) {
+            disconnect(m_mask, nullptr, this, nullptr);
+        }
         m_mask = r;
+        if (m_mask) {
+            connect(m_mask, &QsRegion::regionUpdated, this, &QsPopupWindow::syncMaskStyles);
+        }
         Q_EMIT maskChanged();
+        syncMaskStyles();
+    }
+}
+
+void QsPopupWindow::syncMaskStyles() {
+    if (!handle()) {
+        return;
+    }
+    HWND hwnd = reinterpret_cast<HWND>(winId());
+    if (!hwnd) {
+        return;
+    }
+    const bool clickThrough = (m_mask != nullptr && m_mask->isEmpty());
+    const LONG_PTR curEx = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    LONG_PTR exStyle = curEx;
+    exStyle |= WS_EX_TOOLWINDOW;
+    exStyle &= ~WS_EX_APPWINDOW;
+    if (clickThrough) {
+        exStyle |= WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE;
+    } else {
+        exStyle &= ~WS_EX_TRANSPARENT;
+    }
+    if (exStyle != curEx) {
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, exStyle);
+        if (((exStyle ^ curEx) & WS_EX_LAYERED) != 0) {
+            SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        }
     }
 }
 
@@ -725,19 +769,78 @@ void QsPopupWindow::syncPlacement() {
 
     int baseX = 0;
     int baseY = 0;
+    QScreen* scr = screen();
     if (auto* parentWin = qobject_cast<QWindow*>(m_anchor->window())) {
         baseX = parentWin->x();
         baseY = parentWin->y();
         if (parentWin->screen()) {
-            setScreen(parentWin->screen());
+            scr = parentWin->screen();
+            setScreen(scr);
         }
     }
 
+    const QRectF r = m_anchor->rect();
+    const int edges = m_anchor->edges();
     const int grav = m_anchor->gravity();
-    const int localLeft = qRound(m_anchor->rect().x()) - ((grav & Edges::Left) ? w : 0);
-    const int localTop = qRound(m_anchor->rect().y()) - ((grav & Edges::Top) ? h : 0);
 
-    const QRect target(baseX + localLeft, baseY + localTop, w, h);
+    // Compute anchor point (ax, ay) on anchor.rect according to xdg-positioner / Quickshell edges.
+    qreal ax = r.x() + r.width() * 0.5;
+    const bool eLeft = (edges & Edges::Left) != 0;
+    const bool eRight = (edges & Edges::Right) != 0;
+    if (eLeft && !eRight) {
+        ax = r.x();
+    } else if (eRight && !eLeft) {
+        ax = r.x() + r.width();
+    }
+
+    qreal ay = r.y() + r.height() * 0.5;
+    const bool eTop = (edges & Edges::Top) != 0;
+    const bool eBottom = (edges & Edges::Bottom) != 0;
+    if (eTop && !eBottom) {
+        ay = r.y();
+    } else if (eBottom && !eTop) {
+        ay = r.y() + r.height();
+    }
+
+    // Place popup relative to (ax, ay) according to gravity (center on an axis when neither flag is set).
+    const bool gLeft = (grav & Edges::Left) != 0;
+    const bool gRight = (grav & Edges::Right) != 0;
+    int localLeft = qRound(ax - w * 0.5);
+    if (gLeft && !gRight) {
+        localLeft = qRound(ax) - w;
+    } else if (gRight && !gLeft) {
+        localLeft = qRound(ax);
+    }
+
+    const bool gTop = (grav & Edges::Top) != 0;
+    const bool gBottom = (grav & Edges::Bottom) != 0;
+    int localTop = qRound(ay - h * 0.5);
+    if (gTop && !gBottom) {
+        localTop = qRound(ay) - h;
+    } else if (gBottom && !gTop) {
+        localTop = qRound(ay);
+    }
+
+    int targetX = baseX + localLeft;
+    int targetY = baseY + localTop;
+
+    const int adj = m_anchor->adjustment();
+    if (scr && adj != PopupAdjustment::None) {
+        const QRect sg = scr->geometry();
+        const int pad = 4;
+        if ((adj & PopupAdjustment::SlideX) != 0) {
+            const int minX = sg.x() + pad;
+            const int maxX = qMax(minX, sg.x() + sg.width() - w - pad);
+            targetX = qBound(minX, targetX, maxX);
+        }
+        if ((adj & PopupAdjustment::SlideY) != 0) {
+            const int minY = sg.y() + pad;
+            const int maxY = qMax(minY, sg.y() + sg.height() - h - pad);
+            targetY = qBound(minY, targetY, maxY);
+        }
+    }
+
+    const QRect target(targetX, targetY, w, h);
     if (geometry() != target) {
         setGeometry(target);
     }

@@ -131,6 +131,7 @@ public:
     const QList<QsRegion*>& childRegions() const { return m_regions; }
 
     QRectF ownRect() const;
+    bool isEmpty() const;
     bool containsPoint(const QPointF& windowPt) const;
     bool coversWholeRect(const QSizeF& winSize) const;
 
@@ -421,6 +422,7 @@ Q_SIGNALS:
 
 private:
     void syncPlacement();
+    void syncMaskStyles();
 
     QsPopupAnchor* m_anchor = nullptr;
     qreal m_implicitWidth = 200;
