@@ -12,6 +12,7 @@
 #include <iphlpapi.h>
 #include <ipifcons.h>
 #include <mmdeviceapi.h>
+#include <netlistmgr.h>
 #include <oleauto.h>
 #include <physicalmonitorenumerationapi.h>
 #include <powrprof.h>
@@ -268,6 +269,54 @@ constexpr GUID kIidIMMDeviceEnumerator = { 0xa95664d2, 0x9614, 0x4f35, { 0xa7, 0
 constexpr GUID kIidIAudioEndpointVolume = { 0x5cdf2c82, 0x841e, 0x4546, { 0x97, 0x22, 0x0c, 0xf7, 0x40, 0x78, 0x22, 0x9a } };
 constexpr GUID kClsidWbemLocator = { 0x4590f811, 0x1d3a, 0x11d0, { 0x89, 0x1f, 0x00, 0xaa, 0x00, 0x4b, 0x2e, 0x24 } };
 constexpr GUID kIidIWbemLocator = { 0xdc12a687, 0x737f, 0x11cf, { 0x88, 0x4d, 0x00, 0xaa, 0x00, 0x4b, 0x2e, 0x24 } };
+constexpr GUID kClsidNetworkListManager = { 0xdcb00c01, 0x570f, 0x4a9b, { 0x8d, 0x69, 0x19, 0x9f, 0xdb, 0xa5, 0x72, 0x3b } };
+constexpr GUID kIidINetworkListManager = { 0xdcb00000, 0x570f, 0x4a9b, { 0x8d, 0x69, 0x19, 0x9f, 0xdb, 0xa5, 0x72, 0x3b } };
+
+// Queries the active Windows Network List Manager (NLM) profile name for a specific adapter GUID.
+// On Windows 11 24H2+, WlanQueryInterface(wlan_intf_opcode_current_connection) returns ERROR_ACCESS_DENIED (5)
+// whenever Windows Location Services is disabled, whereas INetworkListManager reliably returns the connected
+// Wi-Fi network name with zero location permission required.
+QString queryConnectedWifiNameFromNlm(const GUID* targetAdapterGuid) {
+    if (!targetAdapterGuid) {
+        return {};
+    }
+    INetworkListManager* nlm = nullptr;
+    const HRESULT hr = CoCreateInstance(
+        kClsidNetworkListManager, nullptr, CLSCTX_ALL,
+        kIidINetworkListManager, reinterpret_cast<void**>(&nlm));
+    if (FAILED(hr) || !nlm) {
+        return {};
+    }
+
+    QString foundName;
+    IEnumNetworkConnections* enumConns = nullptr;
+    if (SUCCEEDED(nlm->GetNetworkConnections(&enumConns)) && enumConns) {
+        INetworkConnection* conn = nullptr;
+        ULONG fetched = 0;
+        while (enumConns->Next(1, &conn, &fetched) == S_OK && fetched == 1 && conn) {
+            VARIANT_BOOL connected = VARIANT_FALSE;
+            GUID adapterId = {};
+            if (SUCCEEDED(conn->get_IsConnected(&connected)) && connected != VARIANT_FALSE &&
+                SUCCEEDED(conn->GetAdapterId(&adapterId)) && IsEqualGUID(adapterId, *targetAdapterGuid)) {
+                INetwork* net = nullptr;
+                if (SUCCEEDED(conn->GetNetwork(&net)) && net) {
+                    BSTR bstrName = nullptr;
+                    if (SUCCEEDED(net->GetName(&bstrName)) && bstrName) {
+                        foundName = QString::fromWCharArray(bstrName).trimmed();
+                        SysFreeString(bstrName);
+                    }
+                    net->Release();
+                }
+                conn->Release();
+                break;
+            }
+            conn->Release();
+        }
+        enumConns->Release();
+    }
+    nlm->Release();
+    return foundName;
+}
 
 bool getEndpointVolume(EDataFlow flow, IAudioEndpointVolume** outVol) {
     if (!outVol) {
@@ -644,6 +693,9 @@ void QuickSource::pollThreadLoop() {
                             }
                             WlanFreeMemory(conn);
                         }
+                        if (snap.wifiName.isEmpty()) {
+                            snap.wifiName = queryConnectedWifiNameFromNlm(&info.InterfaceGuid);
+                        }
                         break;
                     }
                 }
@@ -656,6 +708,10 @@ void QuickSource::pollThreadLoop() {
             if (!rtWifiOn) {
                 snap.wifiName.clear();
             }
+        }
+        if (tick == 0) {
+            qInfo("[QuickSource] Initial Wi-Fi state: wifiOn=%d wifiName='%s'",
+                  snap.wifiOn ? 1 : 0, qPrintable(snap.wifiName));
         }
         ULONG bufSize = 16 * 1024;
         std::vector<BYTE> buf(bufSize);
@@ -687,7 +743,21 @@ void QuickSource::pollThreadLoop() {
             };
             for (auto* aa = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buf.data()); aa != nullptr; aa = aa->Next) {
                 if (aa->OperStatus != IfOperStatusUp) continue;
-                if (aa->IfType == IF_TYPE_ETHERNET_CSMACD) {
+                if (aa->IfType == IF_TYPE_IEEE80211 && snap.wifiName.isEmpty() && aa->AdapterName) {
+                    const QString guidStr = QString::fromLatin1(aa->AdapterName);
+                    GUID adapterGuid = {};
+                    if (SUCCEEDED(CLSIDFromString(reinterpret_cast<LPCOLESTR>(guidStr.utf16()), &adapterGuid))) {
+                        const QString nlmWifi = queryConnectedWifiNameFromNlm(&adapterGuid);
+                        if (!nlmWifi.isEmpty()) {
+                            snap.wifiName = nlmWifi;
+                            if (!hasRtWifi) {
+                                snap.wifiOn = true;
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if (aa->IfType == IF_TYPE_ETHERNET_CSMACD && snap.ethernetName.isEmpty()) {
                     const QString friendly = QString::fromWCharArray(aa->FriendlyName);
                     const QString desc = aa->Description ? QString::fromWCharArray(aa->Description) : QString();
                     if (isVirtualNic(desc.toLower(), friendly.toLower())) {
@@ -698,7 +768,6 @@ void QuickSource::pollThreadLoop() {
                         continue;
                     }
                     snap.ethernetName = friendly;
-                    break;
                 }
             }
         }
@@ -928,6 +997,9 @@ void QuickSource::pollNetwork() {
                             m_wifiName = QString::fromUtf8(reinterpret_cast<const char*>(ssid.ucSSID), static_cast<int>(ssid.uSSIDLength));
                         }
                         WlanFreeMemory(conn);
+                    }
+                    if (m_wifiName.isEmpty()) {
+                        m_wifiName = queryConnectedWifiNameFromNlm(&info.InterfaceGuid);
                     }
                     break;
                 }

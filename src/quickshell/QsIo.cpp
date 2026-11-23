@@ -323,8 +323,9 @@ QString resolveWindowsUserDir(const QString& xdgKey) {
     return QDir::homePath();
 }
 
-QString listWindowsWifiForNmcli() {
+QString listWindowsWifiForNmcli(const QString& connectedSsid = {}) {
     QString out;
+    QSet<QString> seen;
     DWORD negotiatedVer = 0;
     HANDLE hWlan = nullptr;
     if (WlanOpenHandle(2, nullptr, &negotiatedVer, &hWlan) == ERROR_SUCCESS && hWlan) {
@@ -334,7 +335,6 @@ QString listWindowsWifiForNmcli() {
                 const GUID guid = ifList->InterfaceInfo[i].InterfaceGuid;
                 PWLAN_AVAILABLE_NETWORK_LIST netList = nullptr;
                 if (WlanGetAvailableNetworkList(hWlan, &guid, 0, nullptr, &netList) == ERROR_SUCCESS && netList) {
-                    QSet<QString> seen;
                     for (DWORD j = 0; j < netList->dwNumberOfItems; ++j) {
                         const WLAN_AVAILABLE_NETWORK& n = netList->Network[j];
                         if (n.dot11Ssid.uSSIDLength == 0 || n.dot11Ssid.uSSIDLength > DOT11_SSID_MAX_LENGTH) {
@@ -356,9 +356,43 @@ QString listWindowsWifiForNmcli() {
                     WlanFreeMemory(netList);
                 }
             }
+            // Windows 11 24H2+ denies WlanGetAvailableNetworkList when Location Services is off.
+            // Fall back to the active NLM Wi-Fi name + saved WLAN profiles (WlanGetProfileList)
+            // so the Network dialog still shows the connected SSID and saved networks cleanly.
+            if (out.isEmpty()) {
+                if (!connectedSsid.isEmpty()) {
+                    QString safeSsid = connectedSsid;
+                    safeSsid.replace(QLatin1Char('|'), QLatin1Char('?'));
+                    seen.insert(connectedSsid);
+                    out += QStringLiteral("100|WPA2|*|%1\n").arg(safeSsid);
+                }
+                int addedProfiles = 0;
+                for (DWORD i = 0; i < ifList->dwNumberOfItems && addedProfiles < 25; ++i) {
+                    const GUID guid = ifList->InterfaceInfo[i].InterfaceGuid;
+                    PWLAN_PROFILE_INFO_LIST profList = nullptr;
+                    if (WlanGetProfileList(hWlan, &guid, nullptr, &profList) == ERROR_SUCCESS && profList) {
+                        for (DWORD j = 0; j < profList->dwNumberOfItems && addedProfiles < 25; ++j) {
+                            QString pname = QString::fromWCharArray(profList->ProfileInfo[j].strProfileName).trimmed();
+                            if (pname.isEmpty() || seen.contains(pname)) {
+                                continue;
+                            }
+                            seen.insert(pname);
+                            pname.replace(QLatin1Char('|'), QLatin1Char('?'));
+                            out += QStringLiteral("75|WPA2||%1\n").arg(pname);
+                            ++addedProfiles;
+                        }
+                        WlanFreeMemory(profList);
+                    }
+                }
+            }
             WlanFreeMemory(ifList);
         }
         WlanCloseHandle(hWlan, nullptr);
+    }
+    if (out.isEmpty() && !connectedSsid.isEmpty()) {
+        QString safeSsid = connectedSsid;
+        safeSsid.replace(QLatin1Char('|'), QLatin1Char('?'));
+        out += QStringLiteral("100|WPA2|*|%1\n").arg(safeSsid);
     }
     return out;
 }
@@ -2660,8 +2694,11 @@ void QsProcess::startExecution() {
                         .arg(wifi, ssid, eth, bt, btdev, sm, mm, sv, mv, nl).arg(gg);
                 } else if (script.contains(QStringLiteral("device wifi list"))) {
                     QPointer<QsProcess> self(this);
-                    std::thread([self, gen]() {
-                        const QString res = listWindowsWifiForNmcli();
+                    const QString connectedSsid = (s_quickSource && s_quickSource->wifiOn())
+                        ? s_quickSource->wifiName()
+                        : QString();
+                    std::thread([self, gen, connectedSsid]() {
+                        const QString res = listWindowsWifiForNmcli(connectedSsid);
                         if (self) {
                             QMetaObject::invokeMethod(self, [self, gen, res]() {
                                 if (self && self->m_runGeneration == gen && self->m_running) {
