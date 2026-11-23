@@ -56,6 +56,8 @@ set(SOURCES
     src/win32/HotkeyManager.cpp
     src/win32/ScreenshotOverlay.h
     src/win32/ScreenshotOverlay.cpp
+    src/win32/BootCurtainCache.h
+    src/win32/BootCurtainCache.cpp
     src/services/SettingsService.h
     src/services/SettingsService.cpp
     src/services/ThemeService.h
@@ -315,7 +317,7 @@ add_executable(SekaiPopBoot WIN32
     resources/SekaiPopBoot.rc
 )
 target_link_libraries(SekaiPopBoot PRIVATE
-    user32 shell32 ole32 advapi32 shlwapi uuid
+    user32 gdi32 shell32 ole32 advapi32 shlwapi uuid
 )
 if(MINGW)
     target_link_options(SekaiPopBoot PRIVATE -static -municode)

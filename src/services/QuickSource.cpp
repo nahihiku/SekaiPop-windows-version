@@ -594,6 +594,13 @@ void QuickSource::refresh() {
 }
 
 void QuickSource::pollThreadLoop() {
+    // Yield initial 280ms of boot CPU/COM bandwidth to Wallpaper + Bar first-frame rendering.
+    for (int i = 0; i < 14 && !m_stop.load() && !m_wakeNow.load(); ++i) {
+        Sleep(20);
+    }
+    if (m_stop.load()) {
+        return;
+    }
     const CombaseApi& cbApi = CombaseApi::get();
     const bool didRoInit = cbApi.roInit && SUCCEEDED(cbApi.roInit(1)); // RO_INIT_MULTITHREADED
     const bool didCoInit = !didRoInit && SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));

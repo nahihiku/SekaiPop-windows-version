@@ -1,5 +1,6 @@
 #include "QsWindowing.h"
 #include "../win32/AppBarManager.h"
+#include "../win32/BootCurtainCache.h"
 #include "../win32/WallpaperHost.h"
 #include "../win32/Win32Utils.h"
 
@@ -1214,6 +1215,31 @@ QsWindowManager::QsWindowManager(QObject* parent)
 
     m_trimTimer.setSingleShot(true);
     connect(&m_trimTimer, &QTimer::timeout, this, &QsWindowManager::performMemoryTrim);
+
+    m_curtainCaptureTimer.setSingleShot(true);
+    connect(&m_curtainCaptureTimer, &QTimer::timeout, this, [this]() {
+        if (s_windowMgrShuttingDown || !m_allowCurtainCapture || isEditModeActive()) {
+            return;
+        }
+        Win32::BootCurtainCache::captureFromPanels(m_panels, isEditModeActive());
+    });
+}
+
+void QsWindowManager::scheduleBootCurtainCapture(int delayMs) {
+    if (s_windowMgrShuttingDown || !m_allowCurtainCapture) {
+        return;
+    }
+    m_curtainCaptureTimer.start(qMax(250, delayMs));
+}
+
+void QsWindowManager::maybeEmitCurtainDrop() {
+    if (s_windowMgrShuttingDown || m_curtainDropEmitted) {
+        return;
+    }
+    if (m_wallpaperFrameSwapped && m_barFrameSwapped) {
+        m_curtainDropEmitted = true;
+        Q_EMIT curtainDropReady();
+    }
 }
 
 void QsWindowManager::setQmlEngine(QQmlEngine* engine) {
@@ -1268,6 +1294,7 @@ void QsWindowManager::shutdown() {
     if (s_windowMgr) {
         s_windowMgr->m_hitTestTimer.stop();
         s_windowMgr->m_trimTimer.stop();
+        s_windowMgr->m_curtainCaptureTimer.stop();
         s_windowMgr->m_qmlEngine = nullptr;
         s_windowMgr->m_wallpaperHost = nullptr;
         s_windowMgr->m_appBarManager = nullptr;
@@ -1326,6 +1353,24 @@ void QsWindowManager::registerPanel(QsPanelWindow* win) {
     if (!m_panels.contains(win)) {
         m_panels.append(win);
         m_hitTestDirty = true;
+        if (!m_curtainDropEmitted && win) {
+            QPointer<QsPanelWindow> wp(win);
+            connect(win, &QQuickWindow::frameSwapped, this, [this, wp]() {
+                if (s_windowMgrShuttingDown || m_curtainDropEmitted || !wp || !wp->isVisible()) {
+                    return;
+                }
+                WlrLayershellAttached* ls = wp->layerShell();
+                const int layer = ls ? ls->layer() : WlrLayer::Top;
+                const QString ns = ls ? ls->ns() : QString();
+                if (layer == WlrLayer::Background && wp->mask() == nullptr) {
+                    m_wallpaperFrameSwapped = true;
+                } else if (layer == WlrLayer::Top && ns != QStringLiteral("sekaipop-dock") &&
+                           ns != QStringLiteral("sekaipop-hotedge")) {
+                    m_barFrameSwapped = true;
+                }
+                maybeEmitCurtainDrop();
+            }, Qt::QueuedConnection);
+        }
     }
 }
 
@@ -1756,6 +1801,7 @@ void QsWindowManager::restackAll() {
                     markHitTestDirty();
                 }
             });
+            scheduleBootCurtainCapture(1800);
         }
     }
 
@@ -1778,6 +1824,13 @@ void QsWindowManager::restackAll() {
         if (hasWallpaper && hasBar) {
             m_uiReadyEmitted = true;
             Q_EMIT uiReady();
+            scheduleBootCurtainCapture(2800);
+            QTimer::singleShot(350, this, [this]() {
+                if (!s_windowMgrShuttingDown && !m_curtainDropEmitted) {
+                    m_curtainDropEmitted = true;
+                    Q_EMIT curtainDropReady();
+                }
+            });
         } else if (hasWallpaper && !m_wallpaperSeen) {
             m_wallpaperSeen = true;
             // Fallback in case the user disabled the Bar (bar.visible = false)
@@ -1785,6 +1838,11 @@ void QsWindowManager::restackAll() {
                 if (!s_windowMgrShuttingDown && !m_uiReadyEmitted) {
                     m_uiReadyEmitted = true;
                     Q_EMIT uiReady();
+                    scheduleBootCurtainCapture(2600);
+                    if (!m_curtainDropEmitted) {
+                        m_curtainDropEmitted = true;
+                        Q_EMIT curtainDropReady();
+                    }
                 }
             });
         }

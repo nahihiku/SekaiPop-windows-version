@@ -12,6 +12,7 @@
 #include <QMetaObject>
 #include <QPointer>
 #include <QSet>
+#include <QTimer>
 #include <algorithm>
 #include <iterator>
 #include <shlobj.h>
@@ -120,7 +121,9 @@ AppSource::AppSource(SettingsService* settings, QObject* parent)
         });
     }
 
-    rescan();
+    // Defer Start Menu .lnk + COM scan briefly so disk/COM I/O never contends with
+    // initial Wallpaper + Bar QML compilation and D3D11 frame 0 (sync() rescans immediately on demand).
+    QTimer::singleShot(450, this, &AppSource::rescan);
 }
 
 void AppSource::loadUsage() {

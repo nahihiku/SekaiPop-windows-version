@@ -24,7 +24,6 @@ namespace SekaiPop::Quickshell {
 // ============================================================================
 
 QUrl QsUrlInterceptor::intercept(const QUrl& url, DataType type) {
-    Q_UNUSED(type);
     if (!url.isValid()) {
         return url;
     }
@@ -32,6 +31,14 @@ QUrl QsUrlInterceptor::intercept(const QUrl& url, DataType type) {
     const QString raw = url.toString();
     if (!raw.startsWith(QStringLiteral("file://"), Qt::CaseInsensitive)) {
         return url;
+    }
+
+    // Ultra-fast zero-syscall path for clean local QML/JS/qmldir files during engine boot & QML compilation
+    if (type == DataType::QmlFile || type == DataType::JavaScriptFile || type == DataType::QmldirFile) {
+        if (raw.size() >= 10 && raw.startsWith(QStringLiteral("file:///"), Qt::CaseInsensitive) &&
+            raw.at(9) == QLatin1Char(':')) {
+            return url;
+        }
     }
 
     QString local = normalizeWinPath(raw);
@@ -51,8 +58,8 @@ QUrl QsUrlInterceptor::intercept(const QUrl& url, DataType type) {
         }
     }
 
-    // Redirect missing Solar icon aliases cleanly
-    if (!QFileInfo::exists(local) && local.contains(QStringLiteral("/assets/icons/"), Qt::CaseInsensitive)) {
+    // Redirect missing Solar icon aliases cleanly (check substring BEFORE touching the filesystem!)
+    if (local.contains(QStringLiteral("/assets/icons/"), Qt::CaseInsensitive) && !QFileInfo::exists(local)) {
         static const QHash<QString, QString> iconAliases = {
             {QStringLiteral("/air.svg"), QStringLiteral("/wind.svg")},
             {QStringLiteral("/sunny.svg"), QStringLiteral("/sun.svg")},

@@ -481,8 +481,27 @@ void startInstallWorker() {
         const DWORD sizeKB = static_cast<DWORD>(std::max<uint64_t>(1024ULL, unpackedBytes / 1024ULL));
         registerUninstallEntry(targetDir, sizeKB);
 
-        postProgress(hwnd, 97, L"Membuat pintasan Start Menu dan Desktop...");
+        postProgress(hwnd, 95, L"Membuat pintasan Start Menu dan Desktop...");
         createSekaiPopShortcuts(targetDir, mkStartMenu, mkDesktop);
+
+        // Pre-stage qs_stage and pre-compile hot .qmlc bytecode cache during installation so even
+        // the very first Windows boot after install/upgrade hits instant stage cache + hot .qmlc.
+        postProgress(hwnd, 97, L"Menyiapkan cache boot instan SekaiPop...");
+        {
+            const std::wstring shellExe = targetDir + L"\\SekaiPopShell.exe";
+            std::wstring prewarmCmd = L"\"" + shellExe + L"\" --prewarm";
+            STARTUPINFOW psi = {};
+            psi.cb = sizeof(psi);
+            psi.dwFlags = STARTF_USESHOWWINDOW;
+            psi.wShowWindow = SW_HIDE;
+            PROCESS_INFORMATION ppi = {};
+            if (CreateProcessW(shellExe.c_str(), prewarmCmd.data(), nullptr, nullptr, FALSE,
+                               CREATE_NO_WINDOW | NORMAL_PRIORITY_CLASS, nullptr, targetDir.c_str(), &psi, &ppi)) {
+                WaitForSingleObject(ppi.hProcess, 15000);
+                CloseHandle(ppi.hThread);
+                CloseHandle(ppi.hProcess);
+            }
+        }
 
         postProgress(hwnd, 100, L"Instalasi selesai!");
         res->ok = true;

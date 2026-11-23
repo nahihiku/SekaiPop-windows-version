@@ -720,6 +720,13 @@ void MediaSource::raisePlayer(const QString& aumid, const QString& trackTitle) {
 }
 
 void MediaSource::workerLoop() {
+    // Yield initial 240ms of boot CPU/WinRT bandwidth to Wallpaper + Bar first-frame rendering.
+    for (int i = 0; i < 12 && !m_stop.load() && !m_forceRefresh.load(); ++i) {
+        Sleep(20);
+    }
+    if (m_stop.load()) {
+        return;
+    }
     const HRESULT roHr = RoInitialize(RO_INIT_MULTITHREADED);
     const bool needUninit = SUCCEEDED(roHr);
 

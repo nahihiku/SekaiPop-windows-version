@@ -623,11 +623,14 @@ public:
     void unregisterPanel(QsPanelWindow* win);
     void invalidatePanelStack(QsPanelWindow* win);
     bool isPanelStacked(QsPanelWindow* win) const { return m_normalStacked.contains(win); }
+    const QList<QsPanelWindow*>& panels() const { return m_panels; }
     void markHitTestDirty();
 
     bool isEditModeActive() const;
     int barReserveOnEdge(QsScreen* screen, const QString& edge) const;
     void setFullscreenMonitors(const QSet<quintptr>& monitors);
+    void scheduleBootCurtainCapture(int delayMs = 2600);
+    void setAllowBootCurtainCapture(bool allow) { m_allowCurtainCapture = allow; }
 
 public Q_SLOTS:
     void scheduleRestack();
@@ -635,12 +638,14 @@ public Q_SLOTS:
 
 Q_SIGNALS:
     void uiReady();
+    void curtainDropReady();
 
 private:
     explicit QsWindowManager(QObject* parent = nullptr);
     void onEditModeChanged();
     void pollHitTests();
     void performMemoryTrim();
+    void maybeEmitCurtainDrop();
     bool isPanelOnFullscreenMonitor(QsPanelWindow* w) const;
 
     Win32::WallpaperHost* m_wallpaperHost = nullptr;
@@ -653,6 +658,7 @@ private:
     QSet<QsPanelWindow*> m_fullscreenHiddenPanels;
     QTimer m_hitTestTimer;
     QTimer m_trimTimer;
+    QTimer m_curtainCaptureTimer;
     QPoint m_lastCursorPos;
     int m_stationaryHitTicks = 0;
     bool m_hasCursorPos = false;
@@ -662,8 +668,12 @@ private:
     bool m_wasEditMode = false;
     bool m_editModeActive = false;
     bool m_uiReadyEmitted = false;
+    bool m_curtainDropEmitted = false;
+    bool m_wallpaperFrameSwapped = false;
+    bool m_barFrameSwapped = false;
     bool m_wallpaperSeen = false;
     bool m_focusConnected = false;
+    bool m_allowCurtainCapture = true;
 };
 
 } // namespace SekaiPop::Quickshell

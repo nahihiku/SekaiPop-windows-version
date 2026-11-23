@@ -20,7 +20,9 @@
 #include <QQmlContext>
 #include <QQmlNetworkAccessManagerFactory>
 #include <QSaveFile>
+#include <QSet>
 #include <QStandardPaths>
+#include <QTimer>
 #include <qqml.h>
 #include <windows.h>
 
@@ -31,21 +33,23 @@ namespace {
 class QsNetworkAccessManager : public QNetworkAccessManager {
 public:
     explicit QsNetworkAccessManager(QObject* parent = nullptr)
-        : QNetworkAccessManager(parent) {
-        QString localAppData = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
-        if (localAppData.isEmpty()) {
-            localAppData = QDir::homePath() + QStringLiteral("/AppData/Local");
-        }
-        const QString cacheDir = QDir(localAppData).filePath(QStringLiteral("SekaiPop/cache/sekaipop/net_cache"));
-        QDir().mkpath(cacheDir);
-        auto* diskCache = new QNetworkDiskCache(this);
-        diskCache->setCacheDirectory(cacheDir);
-        diskCache->setMaximumCacheSize(64LL * 1024LL * 1024LL);
-        setCache(diskCache);
-    }
+        : QNetworkAccessManager(parent) {}
 
 protected:
     QNetworkReply* createRequest(Operation op, const QNetworkRequest& req, QIODevice* outgoingData) override {
+        if (!m_cacheInit) {
+            m_cacheInit = true;
+            QString localAppData = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+            if (localAppData.isEmpty()) {
+                localAppData = QDir::homePath() + QStringLiteral("/AppData/Local");
+            }
+            const QString cacheDir = QDir(localAppData).filePath(QStringLiteral("SekaiPop/cache/sekaipop/net_cache"));
+            QDir().mkpath(cacheDir);
+            auto* diskCache = new QNetworkDiskCache(this);
+            diskCache->setCacheDirectory(cacheDir);
+            diskCache->setMaximumCacheSize(64LL * 1024LL * 1024LL);
+            setCache(diskCache);
+        }
         QNetworkRequest r(req);
         if (!r.hasRawHeader("User-Agent") || r.rawHeader("User-Agent").isEmpty()) {
             r.setRawHeader("User-Agent", "SekaiPop/1.0");
@@ -61,6 +65,9 @@ protected:
         }
         return QNetworkAccessManager::createRequest(op, r, outgoingData);
     }
+
+private:
+    bool m_cacheInit = false;
 };
 
 class QsNamFactory : public QQmlNetworkAccessManagerFactory {
@@ -115,11 +122,26 @@ void ensureDirJunction(const QString& linkPath, const QString& targetPath) {
     proc.waitForFinished(3000);
 }
 
-struct StagedSingletonInfo {
-    QString name;
-    QString stagedPath;
-    int priority = 100;
-};
+using StagedSingletonInfo = StagedSingletonEntry;
+
+bool isTier1Singleton(const QString& name) {
+    // Minimal 11-singleton critical core required to paint Wallpaper + Bar on Frame 0.
+    // All remaining 60 singletons initialize cleanly in non-blocking micro-batches right after UI ready.
+    static const QSet<QString> tier1 = {
+        QStringLiteral("Directories"),
+        QStringLiteral("SettingsService"),
+        QStringLiteral("GameModeService"),
+        QStringLiteral("WallpaperService"),
+        QStringLiteral("ShellScale"),
+        QStringLiteral("ThemeService"),
+        QStringLiteral("Theme"),
+        QStringLiteral("BarPositionService"),
+        QStringLiteral("BarStyleService"),
+        QStringLiteral("BarLayoutService"),
+        QStringLiteral("StatusIconsService")
+    };
+    return tier1.contains(name);
+}
 
 int singletonPriority(const QString& name) {
     static const QHash<QString, int> prio = {
@@ -259,15 +281,10 @@ void stageQuickshellHelperModules(const QString& stageRoot) {
     ));
 }
 
-QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const QString& exeDir, const QString& stageQsDir) {
-    QDir().mkpath(stageQsDir);
-
-    ensureDirJunction(stageQsDir + QStringLiteral("/assets"), sekaipopDir + QStringLiteral("/assets"));
-    ensureDirJunction(stageQsDir + QStringLiteral("/scripts"), sekaipopDir + QStringLiteral("/scripts"));
-    ensureDirJunction(stageQsDir + QStringLiteral("/shaders"), exeDir + QStringLiteral("/shaders"));
-
-    // Fast fingerprint check to avoid re-reading 540+ QML files on every startup.
-    static constexpr const char* kStageVersion = "v44-win-visualizer-theme-palette";
+QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const QString& exeDir, const QString& stageRoot, const QString& stageQsDir) {
+    // Fast fingerprint check FIRST — avoids running stageQuickshellHelperModules(),
+    // ensureDirJunction() x3, and scanning 540+ QML files on every warm startup (< 2ms).
+    static constexpr const char* kStageVersion = "v47-win-instant-boot-r3";
     QElapsedTimer stageTimer;
     stageTimer.start();
 
@@ -277,8 +294,8 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
         // Production install: stat only SekaiPopShell.exe and shell.qml (2 syscalls instead of 544)
         const QFileInfo exeFi(QCoreApplication::applicationFilePath());
         const QFileInfo shellFi(sekaipopDir + QStringLiteral("/shell.qml"));
-        expectedHeader = QStringLiteral("%1|prod|%2|%3|%4|%5")
-            .arg(QLatin1String(kStageVersion), sekaipopDir)
+        expectedHeader = QStringLiteral("%1|prod|%2|%3|%4|%5|%6")
+            .arg(QLatin1String(kStageVersion), sekaipopDir, exeDir)
             .arg(exeFi.size())
             .arg(exeFi.lastModified().toMSecsSinceEpoch())
             .arg(shellFi.lastModified().toMSecsSinceEpoch());
@@ -306,8 +323,8 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
         scanMtime(QStringLiteral("services"));
         scanMtime(QStringLiteral("modules"));
 
-        expectedHeader = QStringLiteral("%1|%2|%3|%4")
-            .arg(QLatin1String(kStageVersion), sekaipopDir)
+        expectedHeader = QStringLiteral("%1|%2|%3|%4|%5")
+            .arg(QLatin1String(kStageVersion), sekaipopDir, exeDir)
             .arg(srcFileCount)
             .arg(maxMtimeMs);
     }
@@ -319,7 +336,10 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
         if (cf.open(QIODevice::ReadOnly | QIODevice::Text)) {
             const QStringList lines = QString::fromUtf8(cf.readAll()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
             if (!lines.isEmpty() && lines.first().trimmed() == expectedHeader &&
-                QFileInfo::exists(stageQsDir + QStringLiteral("/shell.qml"))) {
+                QFileInfo::exists(stageQsDir + QStringLiteral("/shell.qml")) &&
+                QFileInfo::exists(stageQsDir + QStringLiteral("/DeferredWidgets.qml")) &&
+                QFileInfo::exists(stageRoot + QStringLiteral("/Quickshell/Widgets/qmldir")) &&
+                QFileInfo::exists(stageQsDir + QStringLiteral("/assets"))) {
                 QList<StagedSingletonInfo> cached;
                 bool ok = true;
                 for (int i = 1; i < lines.size(); ++i) {
@@ -342,6 +362,12 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
             }
         }
     }
+
+    QDir().mkpath(stageQsDir);
+    stageQuickshellHelperModules(stageRoot);
+    ensureDirJunction(stageQsDir + QStringLiteral("/assets"), sekaipopDir + QStringLiteral("/assets"));
+    ensureDirJunction(stageQsDir + QStringLiteral("/scripts"), sekaipopDir + QStringLiteral("/scripts"));
+    ensureDirJunction(stageQsDir + QStringLiteral("/shaders"), exeDir + QStringLiteral("/shaders"));
 
     // Stage cache miss (first run or version upgrade): prune stale Qt QML bytecode cache
     // so obsolete .qmlc files from prior versions do not accumulate and slow cold NTFS reads.
@@ -438,6 +464,12 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                 // widgets never resize/jump/stretch swapchains on Edit Desktop enter/exit),
                 // and let EditTray/restack settle for 1 frame before enterAnim starts.
                 if (fi.fileName() == QStringLiteral("EditMode.qml")) {
+                    text.replace(
+                        QStringLiteral("    function open(name) {\n"),
+                        QStringLiteral("    function open(name) {\n"
+                                       "        if (typeof QsDeferredBoot !== \"undefined\" && QsDeferredBoot && !QsDeferredBoot.tier2Ready)\n"
+                                       "            QsDeferredBoot.ensureTier2Now()\n")
+                    );
                     text.replace(
                         QStringLiteral("if (root.appsOn(name)) {"),
                         QStringLiteral("if (false && root.appsOn(name)) {")
@@ -2240,6 +2272,304 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                                        "        function hide(): void { panel.close() }\n"
                                        "    }")
                     );
+
+                    // Stage-0 Ultra-Fast Boot: strip non-core eager imports, defer OSD/Notification/Reload
+                    // popups and Linux-only services until Tier-2 singletons finish right after Wallpaper + Bar paint,
+                    // avoid FolderListModel directory scans when a wallpaper is already saved, and extract the
+                    // entire Desktop Widgets + Edit Desktop block into lazy-loaded DeferredWidgets.qml.
+                    for (const char* stage0Strip : {
+                        "import qs.modules.sekai.desktopWidgets\n",
+                        "import qs.modules.sekai.notificationPopup\n",
+                        "import qs.modules.sekai.onScreenDisplay\n"
+                    }) {
+                        text.remove(QString::fromLatin1(stage0Strip));
+                    }
+                    text.replace(
+                        QStringLiteral("    settings.watchFiles: !UpdateService.updating"),
+                        QStringLiteral("    settings.watchFiles: !(UpdateService && UpdateService.updating)")
+                    );
+                    text.replace(
+                        QStringLiteral("    readonly property bool focusModeOn: FocusService.enabled"),
+                        QStringLiteral("    readonly property bool focusModeOn: QsDeferredBoot.tier2Ready && !!FocusService && FocusService.enabled")
+                    );
+                    text.replace(
+                        QStringLiteral("active: RegionService.open"),
+                        QStringLiteral("active: QsDeferredBoot.tier2Ready && !!RegionService && RegionService.open")
+                    );
+                    text.replace(
+                        QStringLiteral("active: RegionService.previewShown"),
+                        QStringLiteral("active: QsDeferredBoot.tier2Ready && !!RegionService && RegionService.previewShown")
+                    );
+                    text.replace(
+                        QStringLiteral("active: KeyboardService.open"),
+                        QStringLiteral("active: QsDeferredBoot.tier2Ready && !!KeyboardService && KeyboardService.open")
+                    );
+                    text.replace(
+                        QStringLiteral("    readonly property bool appThemingOn: AppThemeService.ready"),
+                        QStringLiteral("    readonly property bool appThemingOn: QsDeferredBoot.tier2Ready && !!AppThemeService && AppThemeService.ready")
+                    );
+                    text.replace(
+                        QStringLiteral("    readonly property bool idleTimesReady: IdleService.ready"),
+                        QStringLiteral("    readonly property bool idleTimesReady: QsDeferredBoot.tier2Ready && !!IdleService && IdleService.ready")
+                    );
+                    text.replace(
+                        QStringLiteral("    readonly property bool appFontsReady: AppFontService.ready"),
+                        QStringLiteral("    readonly property bool appFontsReady: QsDeferredBoot.tier2Ready && !!AppFontService && AppFontService.ready")
+                    );
+                    text.replace(
+                        QStringLiteral("        folder: WallpaperService.directoryUrl"),
+                        QStringLiteral("        folder: (WallpaperService.ready && WallpaperService.defaultPath.length === 0) ? WallpaperService.directoryUrl : \"\"")
+                    );
+                    text.replace(
+                        QStringLiteral("            active: PanelImages.framing !== \"\""),
+                        QStringLiteral("            active: QsDeferredBoot.tier2Ready && !!PanelImages && PanelImages.framing !== \"\"")
+                    );
+                    text.replace(
+                        QStringLiteral("active: WelcomeService.active || WelcomeService.closing"),
+                        QStringLiteral("active: QsDeferredBoot.tier2Ready && !!WelcomeService && (WelcomeService.active || WelcomeService.closing)")
+                    );
+                    text.replace(
+                        QStringLiteral("active: ComponentActivation.overviewActive"),
+                        QStringLiteral("active: QsDeferredBoot.tier2Ready && !!ComponentActivation && ComponentActivation.overviewActive")
+                    );
+                    text.replace(
+                        QStringLiteral("active: ComponentActivation.cheatSheetActive"),
+                        QStringLiteral("active: QsDeferredBoot.tier2Ready && !!ComponentActivation && ComponentActivation.cheatSheetActive")
+                    );
+                    text.replace(
+                        QStringLiteral("active: ComponentActivation.keybindsActive"),
+                        QStringLiteral("active: QsDeferredBoot.tier2Ready && !!ComponentActivation && ComponentActivation.keybindsActive")
+                    );
+                    text.replace(
+                        QStringLiteral("active: ComponentActivation.paletteToolActive"),
+                        QStringLiteral("active: QsDeferredBoot.tier2Ready && !!ComponentActivation && ComponentActivation.paletteToolActive")
+                    );
+                    text.replace(
+                        QStringLiteral("    OSDPopup {}"),
+                        QStringLiteral("    LazyLoader { active: QsDeferredBoot.tier2Ready; source: Qt.resolvedUrl(\"modules/sekai/onScreenDisplay/OSDPopup.qml\") }")
+                    );
+                    text.replace(
+                        QStringLiteral("    ReloadPopup {}"),
+                        QStringLiteral("    LazyLoader { active: QsDeferredBoot.tier2Ready; source: Qt.resolvedUrl(\"ReloadPopup.qml\") }")
+                    );
+                    text.replace(
+                        QStringLiteral("    NotificationPopup {\n        source: notificationState\n    }"),
+                        QStringLiteral("    LazyLoader {\n"
+                                       "        active: QsDeferredBoot.tier2Ready && notificationState.real !== null\n"
+                                       "        source: Qt.resolvedUrl(\"modules/sekai/notificationPopup/NotificationPopup.qml\")\n"
+                                       "        initialProperties: ({ source: notificationState.real })\n"
+                                       "    }")
+                    );
+                    text.replace(
+                        QStringLiteral("    BatteryAlertService {}"),
+                        QStringLiteral("    LazyLoader { active: QsDeferredBoot.tier2Ready; source: Qt.resolvedUrl(\"services/BatteryAlertService.qml\") }")
+                    );
+                    // Defer heavy non-Stage-0 services (QuickSource 78KB + NotificationSource 27KB +
+                    // AppSource 13KB + TraySource 3KB = 121KB QML + JS) until right after Wallpaper + Bar paint.
+                    text.replace(
+                        QStringLiteral("    TraySource {\n        id: trayState\n    }"),
+                        QStringLiteral("    Scope {\n"
+                                       "        id: trayState\n"
+                                       "        readonly property var real: trayStateLoader.item\n"
+                                       "        readonly property var unpinnedItems: real ? real.unpinnedItems : []\n"
+                                       "        readonly property var pinnedItems: real ? real.pinnedItems : []\n"
+                                       "        readonly property bool unpinnedAttention: real ? real.unpinnedAttention : false\n"
+                                       "        LazyLoader {\n"
+                                       "            id: trayStateLoader\n"
+                                       "            active: QsDeferredBoot.tier2Ready\n"
+                                       "            source: Qt.resolvedUrl(\"services/TraySource.qml\")\n"
+                                       "        }\n"
+                                       "    }")
+                    );
+                    text.replace(
+                        QStringLiteral("    QuickSource {\n"
+                                       "        id: quickState\n"
+                                       "        // The Settings show some of these tiles too.\n"
+                                       "        active: panel.up || panel.settingsShown\n"
+                                       "        targetScreen: panel.targetScreen\n"
+                                       "    }"),
+                        QStringLiteral("    Scope {\n"
+                                       "        id: quickState\n"
+                                       "        property bool wantLoad: false\n"
+                                       "        readonly property var real: quickStateLoader.item\n"
+                                       "        readonly property bool notificationsOn: real ? real.notificationsOn : SettingsService.flag(\"notify.on\")\n"
+                                       "        function ensureReal() {\n"
+                                       "            if (!wantLoad) wantLoad = true\n"
+                                       "            return quickStateLoader.item\n"
+                                       "        }\n"
+                                       "        function toggleKeepAwake() {\n"
+                                       "            const r = ensureReal()\n"
+                                       "            if (r) r.toggleKeepAwake()\n"
+                                       "        }\n"
+                                       "        LazyLoader {\n"
+                                       "            id: quickStateLoader\n"
+                                       "            active: QsDeferredBoot.tier2Ready || quickState.wantLoad\n"
+                                       "            source: Qt.resolvedUrl(\"services/QuickSource.qml\")\n"
+                                       "            onItemChanged: {\n"
+                                       "                if (!item) return\n"
+                                       "                item.active = Qt.binding(() => panel.up || panel.settingsShown)\n"
+                                       "                item.targetScreen = Qt.binding(() => panel.targetScreen)\n"
+                                       "            }\n"
+                                       "        }\n"
+                                       "    }")
+                    );
+                    text.replace(
+                        QStringLiteral("    NotificationSource {\n"
+                                       "        id: notificationState\n"
+                                       "        doNotDisturb: !quickState.notificationsOn\n"
+                                       "        quietWhenFullscreen: SettingsService.flag(\"notify.quietFullscreen\")\n"
+                                       "        alertStyle: SettingsService.get(\"notify.style\")\n"
+                                       "        popupsSuppressed: panel.up\n"
+                                       "    }"),
+                        QStringLiteral("    Scope {\n"
+                                       "        id: notificationState\n"
+                                       "        property bool wantLoad: false\n"
+                                       "        readonly property var real: notifStateLoader.item\n"
+                                       "        readonly property int count: real ? real.count : 0\n"
+                                       "        signal alerted(var entry)\n"
+                                       "        function ensureReal() {\n"
+                                       "            if (!wantLoad) wantLoad = true\n"
+                                       "            return notifStateLoader.item\n"
+                                       "        }\n"
+                                       "        LazyLoader {\n"
+                                       "            id: notifStateLoader\n"
+                                       "            active: QsDeferredBoot.tier2Ready || notificationState.wantLoad\n"
+                                       "            source: Qt.resolvedUrl(\"services/NotificationSource.qml\")\n"
+                                       "            onItemChanged: {\n"
+                                       "                if (!item) return\n"
+                                       "                item.doNotDisturb = Qt.binding(() => !quickState.notificationsOn)\n"
+                                       "                item.quietWhenFullscreen = Qt.binding(() => SettingsService.flag(\"notify.quietFullscreen\"))\n"
+                                       "                item.alertStyle = Qt.binding(() => SettingsService.get(\"notify.style\"))\n"
+                                       "                item.popupsSuppressed = Qt.binding(() => panel.up)\n"
+                                       "            }\n"
+                                       "        }\n"
+                                       "        Connections {\n"
+                                       "            target: notifStateLoader.item\n"
+                                       "            function onAlerted(entry) { notificationState.alerted(entry) }\n"
+                                       "        }\n"
+                                       "    }")
+                    );
+                    text.replace(
+                        QStringLiteral("    AppSource {\n        id: appState\n    }"),
+                        QStringLiteral("    Scope {\n"
+                                       "        id: appState\n"
+                                       "        property bool wantLoad: false\n"
+                                       "        readonly property var real: appStateLoader.item\n"
+                                       "        function ensureReal() {\n"
+                                       "            if (!wantLoad) wantLoad = true\n"
+                                       "            return appStateLoader.item\n"
+                                       "        }\n"
+                                       "        LazyLoader {\n"
+                                       "            id: appStateLoader\n"
+                                       "            active: QsDeferredBoot.tier2Ready || appState.wantLoad\n"
+                                       "            source: Qt.resolvedUrl(\"services/AppSource.qml\")\n"
+                                       "        }\n"
+                                       "    }")
+                    );
+                    text.replace(
+                        QStringLiteral("        function ensureLoaded() {\n"
+                                       "            if (!panel.wantLoad)\n"
+                                       "                panel.wantLoad = true\n"
+                                       "            return panelLoader.item\n"
+                                       "        }"),
+                        QStringLiteral("        function ensureLoaded() {\n"
+                                       "            if (typeof QsDeferredBoot !== \"undefined\" && QsDeferredBoot && !QsDeferredBoot.tier2Ready)\n"
+                                       "                QsDeferredBoot.ensureTier2Now()\n"
+                                       "            if (quickState.ensureReal) quickState.ensureReal()\n"
+                                       "            if (notificationState.ensureReal) notificationState.ensureReal()\n"
+                                       "            if (appState.ensureReal) appState.ensureReal()\n"
+                                       "            if (!panel.wantLoad)\n"
+                                       "                panel.wantLoad = true\n"
+                                       "            return panelLoader.item\n"
+                                       "        }")
+                    );
+                    text.replace(
+                        QStringLiteral("            initialProperties: ({\n"
+                                       "                source: panel.source,\n"
+                                       "                notificationSource: panel.notificationSource,\n"
+                                       "                barWindows: panel.barWindows,\n"
+                                       "                coverCheat: panel.coverCheat,\n"
+                                       "                picker: panel.picker,\n"
+                                       "                appSource: panel.appSource,\n"
+                                       "                launcher: panel.launcher\n"
+                                       "            })"),
+                        QStringLiteral("            initialProperties: ({\n"
+                                       "                source: (panel.source && panel.source.real) ? panel.source.real : panel.source,\n"
+                                       "                notificationSource: (panel.notificationSource && panel.notificationSource.real) ? panel.notificationSource.real : panel.notificationSource,\n"
+                                       "                barWindows: panel.barWindows,\n"
+                                       "                coverCheat: panel.coverCheat,\n"
+                                       "                picker: panel.picker,\n"
+                                       "                appSource: (panel.appSource && panel.appSource.real) ? panel.appSource.real : panel.appSource,\n"
+                                       "                launcher: panel.launcher\n"
+                                       "            })")
+                    );
+                    text.replace(
+                        QStringLiteral("            id: panelWarmTimer\n"
+                                       "            interval: 2200\n"
+                                       "            running: !panel.wantLoad\n"
+                                       "            onTriggered: panel.wantLoad = true"),
+                        QStringLiteral("            id: panelWarmTimer\n"
+                                       "            interval: 2200\n"
+                                       "            running: !panel.wantLoad && QsDeferredBoot.tier2Ready\n"
+                                       "            onTriggered: panel.ensureLoaded()")
+                    );
+                    text.replace(
+                        QStringLiteral("                notificationSource: notificationState,\n"
+                                       "                launcher: panel,"),
+                        QStringLiteral("                notificationSource: notificationState.real ? notificationState.real : notificationState,\n"
+                                       "                launcher: panel,")
+                    );
+                    text.replace(
+                        QStringLiteral("        id: dockReadyTimer\n"
+                                       "        interval: 120\n"
+                                       "        running: !shellRoot.dockReady && SettingsService.loaded && BarPositionService.loaded && GameModeService.loaded"),
+                        QStringLiteral("        id: dockReadyTimer\n"
+                                       "        interval: 16\n"
+                                       "        running: !shellRoot.dockReady && QsDeferredBoot.tier2Ready && notificationState.real !== null && SettingsService.loaded && BarPositionService.loaded && GameModeService.loaded")
+                    );
+                    text.replace(
+                        QStringLiteral("        id: startupWakeTimer\n"
+                                       "        interval: 260"),
+                        QStringLiteral("        id: startupWakeTimer\n"
+                                       "        interval: 80")
+                    );
+
+                    // Split the entire Desktop Widgets + Edit Desktop section into DeferredWidgets.qml
+                    // so engine.load(shell.qml) never compiles 650+ lines of FocusGates, widget Loaders,
+                    // WidgetClones Variants, or widget IPC handlers before Wallpaper + Bar render.
+                    const QString splitMarker = QStringLiteral("    readonly property bool widgetsAllowed:");
+                    const int splitIdx = text.indexOf(splitMarker);
+                    if (splitIdx > 0) {
+                        const QString deferredTail = text.mid(splitIdx);
+                        const QString deferredQml =
+                            QStringLiteral("import Quickshell\n"
+                                           "import Quickshell.Io\n"
+                                           "import QtQuick\n"
+                                           "import qs.services\n"
+                                           "import qs.modules.common\n"
+                                           "import qs.modules.sekai.desktopWidgets\n"
+                                           "\n"
+                                           "Scope {\n"
+                                           "    id: shellRoot\n"
+                                           "    property bool dockReady: false\n"
+                                           "\n") + deferredTail;
+                        writeFileIfChanged(stageQsDir + QStringLiteral("/DeferredWidgets.qml"), deferredQml.toUtf8());
+
+                        text = text.left(splitIdx) + QStringLiteral(
+                            "    LazyLoader {\n"
+                            "        id: deferredWidgetsLoader\n"
+                            "        active: QsDeferredBoot.tier2Ready\n"
+                            "        source: Qt.resolvedUrl(\"DeferredWidgets.qml\")\n"
+                            "        initialProperties: ({ dockReady: shellRoot.dockReady })\n"
+                            "    }\n"
+                            "    Binding {\n"
+                            "        when: deferredWidgetsLoader.item !== null\n"
+                            "        target: deferredWidgetsLoader.item\n"
+                            "        property: \"dockReady\"\n"
+                            "        value: shellRoot.dockReady\n"
+                            "    }\n"
+                            "}\n");
+                    }
                 }
 
                 // Disable custom LockState state machine completely on Windows; LockState.lock() ONLY calls LockWorkStation()
@@ -2282,6 +2612,167 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                     text.replace(
                         QStringLiteral("    function hibernate() {\n        root.lockThen(\"hibernate\")\n    }"),
                         QStringLiteral("    function hibernate() {\n        hibernateAction.running = true\n    }")
+                    );
+                    text.replace(
+                        QStringLiteral("DesktopPresetService.noteQuickTiles(root.tiles, root.tileColumns)"),
+                        QStringLiteral("if (DesktopPresetService) DesktopPresetService.noteQuickTiles(root.tiles, root.tileColumns)")
+                    );
+                }
+
+                // Lazy-load BarTip's PopupWindow AND strip Linux-only hyprctl cursorpos Process/Timer/MouseArea
+                // (eliminates 40 QQuickWindows + 40 QsProcess + 40 StdioCollector + 40 Timers + 40 MouseAreas at boot).
+                if (fi.fileName() == QStringLiteral("BarTip.qml")) {
+                    text.replace(
+                        QStringLiteral(
+                            "    MouseArea {\n"
+                            "        width: root.host ? root.host.width : 0\n"
+                            "        height: root.host ? root.host.height : 0\n"
+                            "        hoverEnabled: true\n"
+                            "        acceptedButtons: Qt.NoButton\n"
+                            "        onPositionChanged: root.lastMove = Date.now()\n"
+                            "    }\n"
+                            "\n"
+                            "    Timer {\n"
+                            "        interval: 70\n"
+                            "        repeat: true\n"
+                            "        running: root.shown && root.text !== \"\"\n"
+                            "        onTriggered: {\n"
+                            "            if (!cursorProbe.running)\n"
+                            "                cursorProbe.running = true\n"
+                            "        }\n"
+                            "    }\n"
+                            "\n"
+                            "    Process {\n"
+                            "        id: cursorProbe\n"
+                            "        command: [\"hyprctl\", \"-j\", \"cursorpos\"]\n"
+                            "        stdout: StdioCollector {\n"
+                            "            onStreamFinished: root.checkPointer(text)\n"
+                            "        }\n"
+                            "    }"
+                        ),
+                        QStringLiteral("    // Linux hyprctl cursorpos probe stripped on Windows (Qt hover state is authoritative)")
+                    );
+                    text.replace(
+                        QStringLiteral(
+                            "    PopupWindow {\n"
+                            "        id: popup\n"
+                            "        visible: root.fade > 0.01 && root.barWindow !== null && root.text !== \"\""
+                        ),
+                        QStringLiteral(
+                            "    LazyLoader {\n"
+                            "        id: popupLoader\n"
+                            "        active: root.fade > 0.01 && root.barWindow !== null && root.text !== \"\"\n"
+                            "        PopupWindow {\n"
+                            "            id: popup\n"
+                            "            visible: root.fade > 0.01 && root.barWindow !== null && root.text !== \"\""
+                        )
+                    );
+                    text.replace(
+                        QStringLiteral(
+                            "                Text {\n"
+                            "                    id: label\n"
+                            "                    anchors.centerIn: parent\n"
+                            "                    text: root.text\n"
+                            "                    color: mt.textWhite\n"
+                            "                    font.family: mt.fontFamily\n"
+                            "                    font.pixelSize: 11\n"
+                            "                    font.weight: Font.DemiBold\n"
+                            "                }\n"
+                            "            }\n"
+                            "        }\n"
+                            "    }\n"
+                            "}"
+                        ),
+                        QStringLiteral(
+                            "                Text {\n"
+                            "                    id: label\n"
+                            "                    anchors.centerIn: parent\n"
+                            "                    text: root.text\n"
+                            "                    color: mt.textWhite\n"
+                            "                    font.family: mt.fontFamily\n"
+                            "                    font.pixelSize: 11\n"
+                            "                    font.weight: Font.DemiBold\n"
+                            "                }\n"
+                            "            }\n"
+                            "        }\n"
+                            "        }\n"
+                            "    }\n"
+                            "}"
+                        )
+                    );
+                }
+
+                // Tier-2 safe guards for EditStage, UtilKeys, UtilButtons, DiscordPill, BarLayoutService, ThemeService
+                if (fi.fileName() == QStringLiteral("EditStage.qml")) {
+                    text.replace(
+                        QStringLiteral("readonly property bool editing: EditMode.active && EditMode.editing(root.screenName)"),
+                        QStringLiteral("readonly property bool editing: !!EditMode && EditMode.active && EditMode.editing(root.screenName)")
+                    );
+                    text.replace(
+                        QStringLiteral("x: EditMode.xFor(root.screenName, root.refWidth, root.refHeight, root.uiScale)"),
+                        QStringLiteral("x: (EditMode ? EditMode.xFor(root.screenName, root.refWidth, root.refHeight, root.uiScale) : 0)")
+                    );
+                    text.replace(
+                        QStringLiteral("y: EditMode.yFor(root.screenName, root.refWidth, root.refHeight, root.uiScale)"),
+                        QStringLiteral("y: (EditMode ? EditMode.yFor(root.screenName, root.refWidth, root.refHeight, root.uiScale) : 0)")
+                    );
+                    text.replace(
+                        QStringLiteral("scale: EditMode.scaleFor(root.screenName, root.refWidth, root.refHeight, root.uiScale)"),
+                        QStringLiteral("scale: EditMode ? EditMode.scaleFor(root.screenName, root.refWidth, root.refHeight, root.uiScale) : 1")
+                    );
+                }
+                if (fi.fileName() == QStringLiteral("UtilKeys.qml")) {
+                    text.replace(
+                        QStringLiteral("active: KeyboardService.running"),
+                        QStringLiteral("active: !!KeyboardService && KeyboardService.running")
+                    );
+                    text.replace(
+                        QStringLiteral("onClicked: KeyboardService.toggle()"),
+                        QStringLiteral("onClicked: { if (QsDeferredBoot && !QsDeferredBoot.tier2Ready) QsDeferredBoot.ensureTier2Now(); if (KeyboardService) KeyboardService.toggle() }")
+                    );
+                }
+                if (fi.fileName() == QStringLiteral("UtilButtons.qml")) {
+                    text.replace(
+                        QStringLiteral("readonly property bool recording: recorder.running || RegionService.recording"),
+                        QStringLiteral("readonly property bool recording: recorder.running || (!!RegionService && RegionService.recording)")
+                    );
+                    text.replace(
+                        QStringLiteral("if (RegionService.recording)\n                RegionService.stopRecording()\n            else\n                RegionService.show(\"record\", \"\")"),
+                        QStringLiteral("if (QsDeferredBoot && !QsDeferredBoot.tier2Ready) QsDeferredBoot.ensureTier2Now()\n            if (RegionService) { if (RegionService.recording) RegionService.stopRecording(); else RegionService.show(\"record\", \"\") }")
+                    );
+                    text.replace(
+                        QStringLiteral("RegionService.show(\"copy\", \"\")"),
+                        QStringLiteral("{ if (QsDeferredBoot && !QsDeferredBoot.tier2Ready) QsDeferredBoot.ensureTier2Now(); if (RegionService) RegionService.show(\"copy\", \"\") }")
+                    );
+                }
+                if (fi.fileName() == QStringLiteral("DiscordPill.qml")) {
+                    text.replace(
+                        QStringLiteral("source: DiscordVoiceService.avatarUrl(av.user, 64)"),
+                        QStringLiteral("source: DiscordVoiceService ? DiscordVoiceService.avatarUrl(av.user, 64) : \"\"")
+                    );
+                }
+                if (fi.fileName() == QStringLiteral("BarLayoutService.qml")) {
+                    text.replace(
+                        QStringLiteral("readonly property var modules: root.builtinModules.concat(PluginService.barModules)"),
+                        QStringLiteral("readonly property var modules: root.builtinModules.concat(PluginService ? PluginService.barModules : [])")
+                    );
+                    text.replace(
+                        QStringLiteral("const st = PluginService.stateFor(id)"),
+                        QStringLiteral("const st = PluginService ? PluginService.stateFor(id) : null")
+                    );
+                    text.replace(
+                        QStringLiteral("const missing = PluginService.barModules.map("),
+                        QStringLiteral("const missing = (PluginService ? PluginService.barModules : []).map(")
+                    );
+                    text.replace(
+                        QStringLiteral("for (const m of PluginService.barModules)"),
+                        QStringLiteral("for (const m of (PluginService ? PluginService.barModules : []))")
+                    );
+                }
+                if (fi.fileName() == QStringLiteral("ThemeService.qml")) {
+                    text.replace(
+                        QStringLiteral("HookService.emit("),
+                        QStringLiteral("if (HookService) HookService.emit(")
                     );
                 }
 
@@ -2385,12 +2876,106 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                         QStringLiteral("source: \"file://\" + win.shownImage,"),
                         QStringLiteral("source: (win.shownImage.indexOf(\"/\") === 0 ? \"file://\" : \"file:///\") + win.shownImage,")
                     );
+                    // URL-lazy-load EditBackdrop & EditFrame so WallpaperLayer never compiles Edit Desktop chrome at boot.
+                    text.remove(QStringLiteral("import qs.modules.sekai.editMode\n"));
+                    text.replace(
+                        QStringLiteral("    Loader {\n"
+                                       "        anchors.fill: parent\n"
+                                       "        active: EditMode.editing(win.screenName)\n"
+                                       "\n"
+                                       "        sourceComponent: EditBackdrop {\n"
+                                       "            screenObj: win.screen\n"
+                                       "            uiScale: win.uiScale\n"
+                                       "        }\n"
+                                       "    }"),
+                        QStringLiteral("    Loader {\n"
+                                       "        anchors.fill: parent\n"
+                                       "        active: EditMode.editing(win.screenName)\n"
+                                       "        source: active ? Qt.resolvedUrl(\"../editMode/EditBackdrop.qml\") : \"\"\n"
+                                       "        onLoaded: {\n"
+                                       "            item.screenObj = Qt.binding(() => win.screen)\n"
+                                       "            item.uiScale = Qt.binding(() => win.uiScale)\n"
+                                       "        }\n"
+                                       "    }")
+                    );
+                    text.replace(
+                        QStringLiteral("    Loader {\n"
+                                       "        anchors.fill: parent\n"
+                                       "        active: EditMode.editing(win.screenName)\n"
+                                       "\n"
+                                       "        sourceComponent: EditFrame {\n"
+                                       "            screenObj: win.screen\n"
+                                       "            uiScale: win.uiScale\n"
+                                       "        }\n"
+                                       "    }"),
+                        QStringLiteral("    Loader {\n"
+                                       "        anchors.fill: parent\n"
+                                       "        active: EditMode.editing(win.screenName)\n"
+                                       "        source: active ? Qt.resolvedUrl(\"../editMode/EditFrame.qml\") : \"\"\n"
+                                       "        onLoaded: {\n"
+                                       "            item.screenObj = Qt.binding(() => win.screen)\n"
+                                       "            item.uiScale = Qt.binding(() => win.uiScale)\n"
+                                       "        }\n"
+                                       "    }")
+                    );
+                    text.replace(
+                        QStringLiteral("readonly property bool focusReduced: FocusService.effectsReducedOn(win.screenName)"),
+                        QStringLiteral("readonly property bool focusReduced: !!FocusService && FocusService.effectsReducedOn(win.screenName)")
+                    );
+                    text.replace(
+                        QStringLiteral("|| (win.useMpvpaper && LockState.desktopAsleep)"),
+                        QStringLiteral("|| (win.useMpvpaper && !!LockState && LockState.desktopAsleep)")
+                    );
+                    text.replace(
+                        QStringLiteral("readonly property bool videoEditing: EditMode.editing(win.screenName)"),
+                        QStringLiteral("readonly property bool videoEditing: !!EditMode && EditMode.editing(win.screenName)")
+                    );
+                    text.replace(
+                        QStringLiteral("readonly property bool videoPausedBase: LockState.phase !== \"idle\" || win.videoCovered"),
+                        QStringLiteral("readonly property bool videoPausedBase: (!!LockState && LockState.phase !== \"idle\") || win.videoCovered")
+                    );
+                    text.replace(
+                        QStringLiteral("x: EditMode.xFor(win.screenName, win.width, win.height, win.uiScale)"),
+                        QStringLiteral("x: EditMode ? EditMode.xFor(win.screenName, win.width, win.height, win.uiScale) : 0")
+                    );
+                    text.replace(
+                        QStringLiteral("y: EditMode.yFor(win.screenName, win.width, win.height, win.uiScale)"),
+                        QStringLiteral("y: EditMode ? EditMode.yFor(win.screenName, win.width, win.height, win.uiScale) : 0")
+                    );
+                    text.replace(
+                        QStringLiteral("scale: EditMode.scaleFor(win.screenName, win.width, win.height, win.uiScale)"),
+                        QStringLiteral("scale: EditMode ? EditMode.scaleFor(win.screenName, win.width, win.height, win.uiScale) : 1")
+                    );
+                    text.replace(
+                        QStringLiteral("enabled: EditMode.active"),
+                        QStringLiteral("enabled: !!EditMode && EditMode.active")
+                    );
+                    text.replace(
+                        QStringLiteral("enabled: !EditMode.active"),
+                        QStringLiteral("enabled: !EditMode || !EditMode.active")
+                    );
+                    text.replace(
+                        QStringLiteral("onClicked: EditMode.select(\"\")"),
+                        QStringLiteral("onClicked: { if (EditMode) EditMode.select(\"\") }")
+                    );
+                    text.replace(
+                        QStringLiteral("onClicked: mouse => EditMode.openMenu(win.screenName, mouse.x, mouse.y)"),
+                        QStringLiteral("onClicked: mouse => { if (QsDeferredBoot && !QsDeferredBoot.tier2Ready) QsDeferredBoot.ensureTier2Now(); if (EditMode) EditMode.openMenu(win.screenName, mouse.x, mouse.y) }")
+                    );
+                    text.replace(
+                        QStringLiteral("active: EditMode.editing(win.screenName)"),
+                        QStringLiteral("active: !!EditMode && EditMode.editing(win.screenName)")
+                    );
                 }
 
                 // Bulletproof case-insensitive Windows thumbnail lookup (FolderListModel emits lowercase
                 // "c:/..." on Windows while QFileInfo emits "C:/..." or "/C:/..."), fast scan startup,
                 // and always emits valid 3-slash file:/// URLs.
                 if (fi.fileName() == QStringLiteral("WallpaperService.qml")) {
+                    text.replace(
+                        QStringLiteral("HookService.emit("),
+                        QStringLiteral("if (HookService) HookService.emit(")
+                    );
                     text.replace(
                         QStringLiteral(
                             "    function thumbUrl(path) {\n"
@@ -2982,6 +3567,58 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                     // Defer all 8 heavy Bar popups to URL-based LazyLoader so Bar.qml compiles fast at boot.
                     text.remove(QStringLiteral("import qs.modules.sekai.equalizer\n"));
                     text.remove(QStringLiteral("import qs.modules.sekai.mediaControls\n"));
+                    // Defer TrayPopups (26KB + TrayMenu 9KB + 2 PopupWindows per monitor) until tray is actually opened/clicked
+                    text.replace(
+                        QStringLiteral(
+                            "    TrayPopups {\n"
+                            "        id: trayPopups\n"
+                            "        parentWindow: win\n"
+                            "        source: win.traySource\n"
+                            "        toggleAnchor: statusBar.trayToggle\n"
+                            "        open: win.trayOpen\n"
+                            "        onCloseRequested: win.trayOpen = false\n"
+                            "    }"
+                        ),
+                        QStringLiteral(
+                            "    Scope {\n"
+                            "        id: trayPopups\n"
+                            "        property bool wantLoad: false\n"
+                            "        readonly property var real: trayPopupsLoader.item\n"
+                            "        readonly property bool showing: real ? real.showing : false\n"
+                            "        readonly property var menuItem: real ? real.menuItem : null\n"
+                            "        readonly property var leavingItem: real ? real.leavingItem : null\n"
+                            "        Connections {\n"
+                            "            target: win\n"
+                            "            function onTrayOpenChanged() { if (win.trayOpen) trayPopups.wantLoad = true }\n"
+                            "        }\n"
+                            "        function ensureReal() {\n"
+                            "            if (!wantLoad) wantLoad = true\n"
+                            "            return trayPopupsLoader.item\n"
+                            "        }\n"
+                            "        function handleClick(item, button, icon, fromPop) {\n"
+                            "            const r = ensureReal()\n"
+                            "            if (r) r.handleClick(item, button, icon, fromPop)\n"
+                            "        }\n"
+                            "        function handleScroll(item, delta, horizontal) {\n"
+                            "            const r = ensureReal()\n"
+                            "            if (r) r.handleScroll(item, delta, horizontal)\n"
+                            "        }\n"
+                            "        LazyLoader {\n"
+                            "            id: trayPopupsLoader\n"
+                            "            active: trayPopups.wantLoad\n"
+                            "            source: Qt.resolvedUrl(\"TrayPopups.qml\")\n"
+                            "            onItemChanged: {\n"
+                            "                if (!item) return\n"
+                            "                item.parentWindow = win\n"
+                            "                item.source = Qt.binding(() => (win.traySource && win.traySource.real) ? win.traySource.real : win.traySource)\n"
+                            "                item.toggleAnchor = Qt.binding(() => statusBar.trayToggle)\n"
+                            "                item.open = Qt.binding(() => win.trayOpen)\n"
+                            "                item.closeRequested.connect(() => { win.trayOpen = false })\n"
+                            "            }\n"
+                            "        }\n"
+                            "    }"
+                        )
+                    );
                     text.replace(
                         QStringLiteral(
                             "        MediaPopup {\n"
@@ -3060,8 +3697,8 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                             "            muted: DiscordVoiceService.muted\n"
                             "            deafened: DiscordVoiceService.deafened\n"
                             "            hint: SettingsService.get(\"discord.leftClick\") === \"panel\"\n"
-                            "            ? \"Right-click the pill to deafen \\u00b7 middle-click to mute\"\n"
-                            "            : \"Left-click the pill to mute \\u00b7 right-click to deafen\"\n"
+                            "            ? \"Right-click the pill to deafen \u00b7 middle-click to mute\"\n"
+                            "            : \"Left-click the pill to mute \u00b7 right-click to deafen\"\n"
                             "            onMuteRequested: DiscordVoiceService.setMuted(!DiscordVoiceService.muted)\n"
                             "            onDeafenRequested: DiscordVoiceService.setDeafened(!DiscordVoiceService.deafened)\n"
                             "            onOpenClientRequested: {\n"
@@ -3232,6 +3869,146 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                             "            Qt.callLater(() => { if (item) item.open = Qt.binding(() => resourcePopupLazy.want) })\n"
                             "        }"
                         )
+                    );
+                    // Tier-2 safe null guards for deferred Bar singletons (applied AFTER popup replacements)
+                    text.replace(
+                        QStringLiteral("EqualizerService.discardIfPending()"),
+                        QStringLiteral("if (EqualizerService) EqualizerService.discardIfPending()")
+                    );
+                    text.replace(
+                        QStringLiteral("return IconCursorService.path(entry.icon, \"application-x-executable\")"),
+                        QStringLiteral("return IconCursorService ? IconCursorService.path(entry.icon, \"application-x-executable\") : \"\"")
+                    );
+                    text.replace(
+                        QStringLiteral("readonly property bool editing: win.screen !== null && EditMode.editing(win.screen.name)"),
+                        QStringLiteral("readonly property bool editing: win.screen !== null && !!EditMode && EditMode.editing(win.screen.name)")
+                    );
+                    text.replace(
+                        QStringLiteral("HyprlandSettings.num(\"general.gaps_out\")"),
+                        QStringLiteral("(HyprlandSettings ? HyprlandSettings.num(\"general.gaps_out\") : 0)")
+                    );
+                    text.replace(
+                        QStringLiteral("    readonly property var pluginEntries: PluginService.barPlugins\n"
+                                       "        .map(f => ({ key: \"plugin:\" + f.plugin.id, st: PluginService.states[f.plugin.id] ?? null }))"),
+                        QStringLiteral("    readonly property var pluginEntries: (PluginService ? PluginService.barPlugins : [])\n"
+                                       "        .map(f => ({ key: \"plugin:\" + f.plugin.id, st: PluginService.states[f.plugin.id] ?? null }))")
+                    );
+                    text.replace(
+                        QStringLiteral("discordPopupOpen = DiscordVoiceService.inVoice && !discordPopupOpen"),
+                        QStringLiteral("discordPopupOpen = !!DiscordVoiceService && DiscordVoiceService.inVoice && !discordPopupOpen")
+                    );
+                    text.replace(
+                        QStringLiteral("property bool want: win.discordPopupOpen && DiscordVoiceService.inVoice"),
+                        QStringLiteral("property bool want: win.discordPopupOpen && !!DiscordVoiceService && DiscordVoiceService.inVoice")
+                    );
+                    text.replace(
+                        QStringLiteral("readonly property int activeWorkspace: NiriWorkspaces.running ? NiriWorkspaces.activeOn(screen?.name ?? \"\") : monitor?.activeWorkspace?.id ?? Hyprland.focusedWorkspace?.id ?? 1"),
+                        QStringLiteral("readonly property int activeWorkspace: (NiriWorkspaces && NiriWorkspaces.running) ? NiriWorkspaces.activeOn(screen?.name ?? \"\") : monitor?.activeWorkspace?.id ?? Hyprland.focusedWorkspace?.id ?? 1")
+                    );
+                    text.replace(
+                        QStringLiteral("readonly property var occupiedWorkspaces: NiriWorkspaces.running ? NiriWorkspaces.occupiedOn(screen?.name ?? \"\") : Hyprland.workspaces.values"),
+                        QStringLiteral("readonly property var occupiedWorkspaces: (NiriWorkspaces && NiriWorkspaces.running) ? NiriWorkspaces.occupiedOn(screen?.name ?? \"\") : Hyprland.workspaces.values")
+                    );
+                    text.replace(
+                        QStringLiteral("duration: PresetMotion.outMs"),
+                        QStringLiteral("duration: PresetMotion ? PresetMotion.outMs : 220")
+                    );
+                    text.replace(
+                        QStringLiteral("duration: PresetMotion.inMs"),
+                        QStringLiteral("duration: PresetMotion ? PresetMotion.inMs : 280")
+                    );
+                    text.replace(
+                        QStringLiteral("if (PresetMotion.barBusy) {"),
+                        QStringLiteral("if (PresetMotion && PresetMotion.barBusy) {")
+                    );
+                    text.replace(
+                        QStringLiteral("mediaVisualizerStyle: VisualizerService.pillStyle"),
+                        QStringLiteral("mediaVisualizerStyle: VisualizerService ? VisualizerService.pillStyle : \"none\"")
+                    );
+                    text.replace(
+                        QStringLiteral("mediaPoints: win.vertical ? [] : PcCavaService.points"),
+                        QStringLiteral("mediaPoints: (win.vertical || !PcCavaService) ? [] : PcCavaService.points")
+                    );
+                    text.replace(
+                        QStringLiteral("keyboardLayoutCode: KeyboardLayoutService.code"),
+                        QStringLiteral("keyboardLayoutCode: KeyboardLayoutService ? KeyboardLayoutService.code : \"\"")
+                    );
+                    text.replace(
+                        QStringLiteral("onKeyboardLayoutClicked: KeyboardLayoutService.cycle()"),
+                        QStringLiteral("onKeyboardLayoutClicked: { if (KeyboardLayoutService) KeyboardLayoutService.cycle() }")
+                    );
+                    text.replace(
+                        QStringLiteral("privacyMic: PrivacyService.micLive\n"
+                                       "                privacyAudio: PrivacyService.audioLive\n"
+                                       "                privacyScreen: PrivacyService.screenLive"),
+                        QStringLiteral("privacyMic: !!PrivacyService && PrivacyService.micLive\n"
+                                       "                privacyAudio: !!PrivacyService && PrivacyService.audioLive\n"
+                                       "                privacyScreen: !!PrivacyService && PrivacyService.screenLive")
+                    );
+                    text.replace(
+                        QStringLiteral("if (PrivacyService.screenLive)"),
+                        QStringLiteral("if (PrivacyService && PrivacyService.screenLive)")
+                    );
+                    text.replace(
+                        QStringLiteral("if (PrivacyService.micLive)"),
+                        QStringLiteral("if (PrivacyService && PrivacyService.micLive)")
+                    );
+                    text.replace(
+                        QStringLiteral("if (PrivacyService.audioLive)"),
+                        QStringLiteral("if (PrivacyService && PrivacyService.audioLive)")
+                    );
+                    text.replace(
+                        QStringLiteral(
+                            "                discordInCall: DiscordVoiceService.inVoice\n"
+                            "                discordNeedsAuth: DiscordVoiceService.needsAuth\n"
+                            "                discordAuthorizing: DiscordVoiceService.status === \"authorizing\"\n"
+                            "                discordChannel: DiscordVoiceService.channel ? (DiscordVoiceService.channel.name || \"\") : \"\"\n"
+                            "                discordParticipants: DiscordVoiceService.participants\n"
+                            "                discordMuted: DiscordVoiceService.muted\n"
+                            "                discordDeafened: DiscordVoiceService.deafened\n"
+                            "                onDiscordMuteRequested: DiscordVoiceService.setMuted(!DiscordVoiceService.muted)\n"
+                            "                onDiscordDeafenRequested: DiscordVoiceService.setDeafened(!DiscordVoiceService.deafened)\n"
+                            "                onDiscordAuthorizeRequested: DiscordVoiceService.authorizeAfterFocusRelease()"
+                        ),
+                        QStringLiteral(
+                            "                discordInCall: !!DiscordVoiceService && DiscordVoiceService.inVoice\n"
+                            "                discordNeedsAuth: !!DiscordVoiceService && DiscordVoiceService.needsAuth\n"
+                            "                discordAuthorizing: !!DiscordVoiceService && DiscordVoiceService.status === \"authorizing\"\n"
+                            "                discordChannel: (DiscordVoiceService && DiscordVoiceService.channel) ? (DiscordVoiceService.channel.name || \"\") : \"\"\n"
+                            "                discordParticipants: DiscordVoiceService ? DiscordVoiceService.participants : []\n"
+                            "                discordMuted: !!DiscordVoiceService && DiscordVoiceService.muted\n"
+                            "                discordDeafened: !!DiscordVoiceService && DiscordVoiceService.deafened\n"
+                            "                onDiscordMuteRequested: { if (DiscordVoiceService) DiscordVoiceService.setMuted(!DiscordVoiceService.muted) }\n"
+                            "                onDiscordDeafenRequested: { if (DiscordVoiceService) DiscordVoiceService.setDeafened(!DiscordVoiceService.deafened) }\n"
+                            "                onDiscordAuthorizeRequested: { if (DiscordVoiceService) DiscordVoiceService.authorizeAfterFocusRelease() }"
+                        )
+                    );
+                    text.replace(
+                        QStringLiteral(
+                            "                updatesCount: PackageUpdatesService.total\n"
+                            "                updatesNudging: PackageUpdatesService.nudging\n"
+                            "                updatesShowZero: SettingsService.flag(\"updates.showZero\")\n"
+                            "                updatesBusy: PackageUpdatesService.status === \"checking\" || PackageUpdatesService.upgrading\n"
+                            "                updatesLoading: PackageUpdatesService.loadingBadge\n"
+                            "                updatesTip: PackageUpdatesService.breakdown\n"
+                            "                + (PackageUpdatesService.total > 0 ? \" — click to update, right-click to recheck\" : \" — right-click to recheck\")\n"
+                            "                onUpdatesClicked: PackageUpdatesService.runUpdate()\n"
+                            "                onUpdatesRefreshRequested: PackageUpdatesService.refresh(true)"
+                        ),
+                        QStringLiteral(
+                            "                updatesCount: PackageUpdatesService ? PackageUpdatesService.total : 0\n"
+                            "                updatesNudging: !!PackageUpdatesService && PackageUpdatesService.nudging\n"
+                            "                updatesShowZero: SettingsService.flag(\"updates.showZero\")\n"
+                            "                updatesBusy: !!PackageUpdatesService && (PackageUpdatesService.status === \"checking\" || PackageUpdatesService.upgrading)\n"
+                            "                updatesLoading: !!PackageUpdatesService && PackageUpdatesService.loadingBadge\n"
+                            "                updatesTip: PackageUpdatesService ? (PackageUpdatesService.breakdown + (PackageUpdatesService.total > 0 ? \" — click to update, right-click to recheck\" : \" — right-click to recheck\")) : \"\"\n"
+                            "                onUpdatesClicked: { if (PackageUpdatesService) PackageUpdatesService.runUpdate() }\n"
+                            "                onUpdatesRefreshRequested: { if (PackageUpdatesService) PackageUpdatesService.refresh(true) }"
+                        )
+                    );
+                    text.replace(
+                        QStringLiteral("if (NiriWorkspaces.running) {"),
+                        QStringLiteral("if (NiriWorkspaces && NiriWorkspaces.running) {")
                     );
                 }
 
@@ -5544,28 +6321,108 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
 
 } // namespace
 
-QUrl setupQuickshellEngine(QQmlApplicationEngine& engine, const QsRuntimeDeps& deps) {
-    const QString sekaipopDir = QDir(deps.baseDir).filePath(QStringLiteral("sekaipop"));
-    // Always stage generated QML modules in user-writable %LOCALAPPDATA%\SekaiPop\qs_stage
-    // so SekaiPop works cleanly when installed in read-only C:\Program Files\SekaiPop.
-    const QString localDataRoot = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
-    const QString stageRoot = !localDataRoot.isEmpty()
-        ? QDir(localDataRoot).filePath(QStringLiteral("SekaiPop/qs_stage"))
-        : QDir(deps.exeDir).filePath(QStringLiteral("qs_stage"));
-    const QString stageQsDir = QDir(stageRoot).filePath(QStringLiteral("qs"));
-    const QString shadersDir = QDir(deps.exeDir).filePath(QStringLiteral("shaders"));
+// ============================================================================
+// QsDeferredBoot (Micro-Batched Tier-2 Singleton Initialization Post-UI-Ready)
+// ============================================================================
 
-    QsWindowManager::instance()->init(deps.wallpaperHost, deps.appBarManager);
-    QsProcess::initBackends(deps.spectrumSource, deps.quickSource, deps.statusIconsService, deps.windowTracker, deps.mediaSource);
+QsDeferredBoot::QsDeferredBoot(QQmlApplicationEngine* engine, QList<StagedSingletonEntry> tier2, QObject* parent)
+    : QObject(parent)
+    , m_engine(engine)
+    , m_tier2(std::move(tier2)) {}
 
-    stageQuickshellHelperModules(stageRoot);
-    const QList<StagedSingletonInfo> singletons = stageSekaipopTree(sekaipopDir, deps.exeDir, stageQsDir);
+void QsDeferredBoot::initOne(const StagedSingletonEntry& info) {
+    if (!m_engine) {
+        return;
+    }
+    QQmlContext* rootCtx = m_engine->rootContext();
+    auto* comp = new QQmlComponent(m_engine, QUrl::fromLocalFile(info.stagedPath), m_engine);
+    if (comp->isError()) {
+        for (const QQmlError& err : comp->errors()) {
+            qWarning("[QsEngineSetup] Tier-2 singleton compile error (%s): %s",
+                     qPrintable(info.name), qPrintable(err.toString()));
+        }
+        return;
+    }
+    QObject* obj = comp->beginCreate(rootCtx);
+    if (!obj) {
+        qWarning("[QsEngineSetup] Failed beginCreate for Tier-2 singleton: %s", qPrintable(info.name));
+        return;
+    }
+    obj->setParent(m_engine);
+    rootCtx->setContextProperty(info.name, obj);
+    comp->completeCreate();
+    if (info.name == QStringLiteral("EditMode")) {
+        if (auto* wm = QsWindowManager::instance()) {
+            wm->setEditModeObject(obj);
+        }
+    }
+}
 
+void QsDeferredBoot::finalizeTier2() {
+    if (m_tier2Ready) {
+        return;
+    }
+    m_tier2Ready = true;
+    qInfo("[QsEngineSetup] Deferred Tier-2 singletons (%d) ready in %lldms.",
+          static_cast<int>(m_tier2.size()), m_timer.isValid() ? m_timer.elapsed() : 0LL);
+    Q_EMIT tier2ReadyChanged();
+}
+
+void QsDeferredBoot::scheduleNextBatch() {
+    if (m_tier2Ready || !m_engine) {
+        return;
+    }
+    constexpr int kBatchSize = 5;
+    int ran = 0;
+    while (m_index < m_tier2.size() && ran < kBatchSize) {
+        initOne(m_tier2.at(m_index++));
+        ++ran;
+    }
+    if (m_index >= m_tier2.size()) {
+        finalizeTier2();
+        return;
+    }
+    QTimer::singleShot(0, this, [this]() {
+        scheduleNextBatch();
+    });
+}
+
+void QsDeferredBoot::startAsync() {
+    if (m_started || m_tier2Ready) {
+        return;
+    }
+    m_started = true;
+    m_timer.start();
+    if (m_tier2.isEmpty()) {
+        finalizeTier2();
+        return;
+    }
+    QTimer::singleShot(0, this, [this]() {
+        scheduleNextBatch();
+    });
+}
+
+void QsDeferredBoot::ensureTier2Now() {
+    if (m_tier2Ready || !m_engine) {
+        return;
+    }
+    if (!m_started) {
+        m_started = true;
+        m_timer.start();
+    }
+    while (m_index < m_tier2.size()) {
+        initOne(m_tier2.at(m_index++));
+    }
+    finalizeTier2();
+}
+
+namespace {
+
+void registerQuickshellTypes(QQmlApplicationEngine& engine, const QsRuntimeDeps& deps, const QString& stageRoot, const QString& stageQsDir, const QString& shadersDir) {
     engine.setNetworkAccessManagerFactory(new QsNamFactory());
     engine.addUrlInterceptor(new QsUrlInterceptor(shadersDir));
     engine.addImportPath(stageRoot);
 
-    // Instantiate C++ Quickshell singletons
     auto* qsGlobal = new QsGlobal(stageQsDir, deps.appSource, deps.windowTracker, &engine);
     auto* qsDesktopEntries = new QsDesktopEntries(deps.appSource, deps.windowTracker, &engine);
     auto* qsHyprland = new QsHyprland(deps.windowTracker, &engine);
@@ -5652,7 +6509,6 @@ QUrl setupQuickshellEngine(QQmlApplicationEngine& engine, const QsRuntimeDeps& d
     qmlRegisterType<QsPamContext>("Quickshell.Services.Pam", 1, 0, "PamContext");
     qmlRegisterUncreatableType<QsPamResult>("Quickshell.Services.Pam", 1, 0, "PamResult", QStringLiteral("Enum"));
 
-    // Also expose core singletons on rootContext so any QML file can access them directly
     QQmlContext* rootCtx = engine.rootContext();
     rootCtx->setContextProperty(QStringLiteral("Quickshell"), qsGlobal);
     rootCtx->setContextProperty(QStringLiteral("DesktopEntries"), qsDesktopEntries);
@@ -5662,17 +6518,51 @@ QUrl setupQuickshellEngine(QQmlApplicationEngine& engine, const QsRuntimeDeps& d
     rootCtx->setContextProperty(QStringLiteral("UPower"), qsUPower);
     rootCtx->setContextProperty(QStringLiteral("PowerProfiles"), qsPowerProfiles);
     rootCtx->setContextProperty(QStringLiteral("SystemTray"), qsSysTray);
+}
 
-    // Instantiate and finalize singletons one by one in dependency priority order
-    // so enginePrivate->inProgressCreations returns to 0 after each singleton
+} // namespace
+
+QUrl setupQuickshellEngine(QQmlApplicationEngine& engine, const QsRuntimeDeps& deps, QsDeferredBoot** outDeferred) {
+    const QString sekaipopDir = QDir(deps.baseDir).filePath(QStringLiteral("sekaipop"));
+    const QString localDataRoot = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    const QString stageRoot = !localDataRoot.isEmpty()
+        ? QDir(localDataRoot).filePath(QStringLiteral("SekaiPop/qs_stage"))
+        : QDir(deps.exeDir).filePath(QStringLiteral("qs_stage"));
+    const QString stageQsDir = QDir(stageRoot).filePath(QStringLiteral("qs"));
+    const QString shadersDir = QDir(deps.exeDir).filePath(QStringLiteral("shaders"));
+
+    QsWindowManager::instance()->init(deps.wallpaperHost, deps.appBarManager);
+    QsProcess::initBackends(deps.spectrumSource, deps.quickSource, deps.statusIconsService, deps.windowTracker, deps.mediaSource);
+
+    const QList<StagedSingletonInfo> singletons = stageSekaipopTree(sekaipopDir, deps.exeDir, stageRoot, stageQsDir);
+
+    registerQuickshellTypes(engine, deps, stageRoot, stageQsDir, shadersDir);
+
+    QQmlContext* rootCtx = engine.rootContext();
+    QList<StagedSingletonInfo> tier1;
+    QList<StagedSingletonInfo> tier2;
+    tier1.reserve(30);
+    tier2.reserve(singletons.size());
     for (const StagedSingletonInfo& info : singletons) {
         rootCtx->setContextProperty(info.name, static_cast<QObject*>(nullptr));
+        if (isTier1Singleton(info.name)) {
+            tier1.append(info);
+        } else {
+            tier2.append(info);
+        }
     }
 
+    auto* deferred = new QsDeferredBoot(&engine, std::move(tier2), &engine);
+    rootCtx->setContextProperty(QStringLiteral("QsDeferredBoot"), deferred);
+    if (outDeferred) {
+        *outDeferred = deferred;
+    }
+
+    // Initialize ONLY Tier-1 singletons required for Wallpaper + Bar before engine.load(shell.qml).
     QElapsedTimer singletonsTimer;
     singletonsTimer.start();
     int initializedCount = 0;
-    for (const StagedSingletonInfo& info : singletons) {
+    for (const StagedSingletonInfo& info : tier1) {
         QElapsedTimer oneTimer;
         oneTimer.start();
         auto* comp = new QQmlComponent(&engine, QUrl::fromLocalFile(info.stagedPath), &engine);
@@ -5694,8 +6584,8 @@ QUrl setupQuickshellEngine(QQmlApplicationEngine& engine, const QsRuntimeDeps& d
         ++initializedCount;
 
         const qint64 oneMs = oneTimer.elapsed();
-        if (oneMs >= 45) {
-            qInfo("[QsEngineSetup] Slow singleton %s: %lldms", qPrintable(info.name), oneMs);
+        if (oneMs >= 30) {
+            qInfo("[QsEngineSetup] Slow Tier-1 singleton %s: %lldms", qPrintable(info.name), oneMs);
         }
 
         if (info.name == QStringLiteral("EditMode")) {
@@ -5703,9 +6593,69 @@ QUrl setupQuickshellEngine(QQmlApplicationEngine& engine, const QsRuntimeDeps& d
         }
     }
 
-    qInfo("[QsEngineSetup] Initialized %d sekaipop singletons in %lldms.",
-          initializedCount, singletonsTimer.elapsed());
+    // Pre-settle fast local C++ state-load QTimer::singleShot(0) callbacks (SettingsService,
+    // BarPositionService, BarStyleService, BarLayoutService, GameModeService, WallpaperService,
+    // ThemeService, ShellScale) BEFORE shell.qml loads so Wallpaper + Bar instantiate with their
+    // final saved configuration on Frame 0 (eliminating post-load waiting & double-layouts).
+    QElapsedTimer settleTimer;
+    settleTimer.start();
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 25);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 25);
+
+    qInfo("[QsEngineSetup] Initialized %d Tier-1 singletons in %lldms (pre-settle=%lldms, %d Tier-2 deferred).",
+          initializedCount, singletonsTimer.elapsed(), settleTimer.elapsed(),
+          static_cast<int>(singletons.size()) - initializedCount);
     return QUrl::fromLocalFile(QDir(stageQsDir).filePath(QStringLiteral("shell.qml")));
+}
+
+void prewarmQuickshellCache(QQmlApplicationEngine& engine, const QsRuntimeDeps& deps) {
+    QElapsedTimer total;
+    total.start();
+    const QString sekaipopDir = QDir(deps.baseDir).filePath(QStringLiteral("sekaipop"));
+    const QString localDataRoot = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    const QString stageRoot = !localDataRoot.isEmpty()
+        ? QDir(localDataRoot).filePath(QStringLiteral("SekaiPop/qs_stage"))
+        : QDir(deps.exeDir).filePath(QStringLiteral("qs_stage"));
+    const QString stageQsDir = QDir(stageRoot).filePath(QStringLiteral("qs"));
+    const QString shadersDir = QDir(deps.exeDir).filePath(QStringLiteral("shaders"));
+
+    const QList<StagedSingletonInfo> singletons = stageSekaipopTree(sekaipopDir, deps.exeDir, stageRoot, stageQsDir);
+    registerQuickshellTypes(engine, deps, stageRoot, stageQsDir, shadersDir);
+
+    QQmlContext* rootCtx = engine.rootContext();
+    for (const StagedSingletonInfo& info : singletons) {
+        rootCtx->setContextProperty(info.name, static_cast<QObject*>(nullptr));
+    }
+    auto* dummyDeferred = new QsDeferredBoot(&engine, {}, &engine);
+    rootCtx->setContextProperty(QStringLiteral("QsDeferredBoot"), dummyDeferred);
+
+    // Compile-only (no create(), no windows, no D3D11) to generate hot .qmlc bytecode on disk.
+    int compiled = 0;
+    for (const StagedSingletonInfo& info : singletons) {
+        QQmlComponent comp(&engine, QUrl::fromLocalFile(info.stagedPath));
+        if (!comp.isError()) {
+            ++compiled;
+        }
+    }
+    const QStringList coreRelPaths = {
+        QStringLiteral("shell.qml"),
+        QStringLiteral("DeferredWidgets.qml"),
+        QStringLiteral("modules/sekai/background/WallpaperLayer.qml"),
+        QStringLiteral("modules/sekai/bar/Bar.qml"),
+        QStringLiteral("modules/sekai/bar/Status_Bar.qml"),
+        QStringLiteral("modules/sekai/dock/Dock.qml")
+    };
+    for (const QString& rel : coreRelPaths) {
+        const QString p = QDir(stageQsDir).filePath(rel);
+        if (QFileInfo::exists(p)) {
+            QQmlComponent comp(&engine, QUrl::fromLocalFile(p));
+            if (!comp.isError()) {
+                ++compiled;
+            }
+        }
+    }
+    qInfo("[Prewarm] Staged tree and pre-compiled %d QML units (.qmlc hot cache) in %lldms.",
+          compiled, total.elapsed());
 }
 
 } // namespace SekaiPop::Quickshell

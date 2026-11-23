@@ -16,6 +16,7 @@
 #include <QPixmapCache>
 #include <QProcess>
 #include <QQmlApplicationEngine>
+#include <QQmlComponent>
 #include <QQmlContext>
 #include <QQuickItem>
 #include <QQuickStyle>
@@ -46,6 +47,9 @@
 #include "win32/WinIconProvider.h"
 #include "win32/WindowTracker.h"
 
+#include <atomic>
+#include <cstring>
+#include <cwchar>
 #include <windows.h>
 #include <mmsystem.h>
 #include <shellapi.h>
@@ -53,6 +57,27 @@
 #include <thread>
 
 namespace {
+
+std::atomic<bool> g_bootFinished{false};
+
+int CALLBACK fontExistsEnumProc(const LOGFONTW*, const TEXTMETRICW*, DWORD, LPARAM lParam) {
+    *reinterpret_cast<bool*>(lParam) = true;
+    return 0; // Stop immediately on first match
+}
+
+bool hasWin32FontFamily(const wchar_t* familyName) {
+    HDC hdc = GetDC(nullptr);
+    if (!hdc) {
+        return false;
+    }
+    LOGFONTW lf = {};
+    lf.lfCharSet = DEFAULT_CHARSET;
+    wcsncpy(lf.lfFaceName, familyName, LF_FACESIZE - 1);
+    bool found = false;
+    EnumFontFamiliesExW(hdc, &lf, &fontExistsEnumProc, reinterpret_cast<LPARAM>(&found), 0);
+    ReleaseDC(nullptr, hdc);
+    return found;
+}
 
 struct TimePeriodGuard {
     bool active = false;
@@ -88,11 +113,11 @@ QString resolveBaseDir() {
 }
 
 QString pickShellFontFamily() {
-    const QStringList families = QFontDatabase::families();
-    if (families.contains(QStringLiteral("Google Sans Flex"), Qt::CaseInsensitive)) {
+    // Fast targeted Win32 GDI single-family lookup (< 0.5ms vs ~50ms for QFontDatabase::families()).
+    if (hasWin32FontFamily(L"Google Sans Flex")) {
         return QStringLiteral("Google Sans Flex");
     }
-    if (families.contains(QStringLiteral("Segoe UI Variable"), Qt::CaseInsensitive)) {
+    if (hasWin32FontFamily(L"Segoe UI Variable")) {
         return QStringLiteral("Segoe UI Variable");
     }
     return QStringLiteral("Segoe UI");
@@ -128,7 +153,7 @@ void shellMessageHandler(QtMsgType type, const QMessageLogContext&, const QStrin
     }
     if (logFile.isOpen()) {
         logFile.write(utf8);
-        if (type >= QtInfoMsg) {
+        if (type >= QtWarningMsg || g_bootFinished.load(std::memory_order_relaxed)) {
             logFile.flush();
         }
     }
@@ -140,9 +165,9 @@ int main(int argc, char* argv[]) {
     QElapsedTimer startupTimer;
     startupTimer.start();
 
-    // Boost startup priority so cold Windows boot schedules SekaiPop UI ahead of background
-    // services and Defender scans; dropped back to NORMAL_PRIORITY_CLASS once first UI paints.
-    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+    // Boost startup priority to HIGH_PRIORITY_CLASS so cold Windows boot schedules SekaiPop UI
+    // ahead of background services and Defender scans; dropped back to NORMAL_PRIORITY_CLASS on UI ready.
+    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 
     if (!qEnvironmentVariableIsSet("QSG_RENDER_LOOP")) {
         // Basic render loop shares one scenegraph render thread across all shell
@@ -188,6 +213,8 @@ int main(int argc, char* argv[]) {
     QCommandLineOption ipcOpt(QStringLiteral("ipc"), QStringLiteral("Call IpcHandler target:func[:arg1[:arg2]] after startup."), QStringLiteral("spec"));
     QCommandLineOption dumpOpt(QStringLiteral("dump-dir"), QStringLiteral("Dump live window state and grabWindow PNGs to directory."), QStringLiteral("dir"));
     QCommandLineOption nativeShellOpt(QStringLiteral("native-shell"), QStringLiteral("Running as the primary Windows Winlogon shell under SekaiPopBoot watchdog."));
+    QCommandLineOption prewarmOpt(QStringLiteral("prewarm"), QStringLiteral("Headless stage & QML bytecode (.qmlc) cache pre-warm for instant first boot."));
+    QCommandLineOption captureCurtainOpt(QStringLiteral("capture-curtain"), QStringLiteral("Allow boot curtain snapshot capture during automated runs."));
     parser.addOption(smokeOpt);
     parser.addOption(launcherOpt);
     parser.addOption(phoneOpt);
@@ -195,8 +222,25 @@ int main(int argc, char* argv[]) {
     parser.addOption(ipcOpt);
     parser.addOption(dumpOpt);
     parser.addOption(nativeShellOpt);
+    parser.addOption(prewarmOpt);
+    parser.addOption(captureCurtainOpt);
     parser.process(app);
     const bool isNativeShell = parser.isSet(nativeShellOpt);
+    const bool isPrewarm = parser.isSet(prewarmOpt);
+    const bool wantCaptureCurtain = parser.isSet(captureCurtainOpt);
+
+    if (isPrewarm) {
+        SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
+        const QString baseDir = resolveBaseDir();
+        const QString exeDir = QCoreApplication::applicationDirPath();
+        QQmlApplicationEngine engine;
+        SekaiPop::Quickshell::QsRuntimeDeps qsDeps;
+        qsDeps.baseDir = baseDir;
+        qsDeps.exeDir = exeDir;
+        SekaiPop::Quickshell::prewarmQuickshellCache(engine, qsDeps);
+        g_bootFinished.store(true);
+        return 0;
+    }
 
     // Prevent accidental duplicate SekaiPopShell instances fighting over GPU, z-order, and hotkeys.
     // Automated test runs (--smoke-ms / --dump-dir) bypass the guard.
@@ -276,7 +320,7 @@ int main(int argc, char* argv[]) {
             }
         }
     });
-    taskbarGuard->start();
+    // Defer periodic taskbarGuard start until after Wallpaper + Bar paint (initial hide already ran above).
 
     auto doRestoreTaskbar = [&keepTaskbarHidden, &appBarManager, &windowTracker, &nativeTaskmanHost]() {
         keepTaskbarHidden = false;
@@ -357,9 +401,13 @@ int main(int argc, char* argv[]) {
     QObject::connect(&shellEmergencyIpc, &SekaiPop::Quickshell::QsShellEmergencyIpc::toggleTaskbarRequested, &app, doToggleTaskbar);
     QObject::connect(&shellEmergencyIpc, &SekaiPop::Quickshell::QsShellEmergencyIpc::restoreTaskbarRequested, &app, doRestoreTaskbar);
 
-    // Native Windows System Tray Icon for emergency access & quick controls
-    QSystemTrayIcon* trayIcon = nullptr;
-    if (QSystemTrayIcon::isSystemTrayAvailable()) {
+    // Native Windows System Tray Icon for emergency access & quick controls (deferred until after UI ready
+    // so QPixmap/QPainter/QMenu creation never delays initial Wallpaper + Bar first paint).
+    auto trayIconHolder = std::make_shared<QSystemTrayIcon*>(nullptr);
+    auto initTrayIconOnce = [&app, fontFamily, trayIconHolder, doToggleTaskbar, doRestartShell, doEmergencyRestoreAndExit, doEmergencyExit]() {
+        if (*trayIconHolder || !QSystemTrayIcon::isSystemTrayAvailable()) {
+            return;
+        }
         QPixmap pm(32, 32);
         pm.fill(Qt::transparent);
         QPainter p(&pm);
@@ -373,7 +421,7 @@ int main(int argc, char* argv[]) {
         p.drawText(pm.rect(), Qt::AlignCenter, QStringLiteral("S"));
         p.end();
 
-        trayIcon = new QSystemTrayIcon(QIcon(pm), &app);
+        auto* trayIcon = new QSystemTrayIcon(QIcon(pm), &app);
         trayIcon->setToolTip(QStringLiteral("SekaiPop Shell (Emergency: Ctrl+Shift+Alt+E Restore Explorer & Exit / R Restart)"));
 
         auto* trayMenu = new QMenu();
@@ -399,7 +447,8 @@ int main(int argc, char* argv[]) {
             }
         });
         trayIcon->show();
-    }
+        *trayIconHolder = trayIcon;
+    };
 
     // Connect global Win32 hotkeys directly to Quickshell IPC targets & emergency actions
     QObject::connect(&hotkeyManager, &SekaiPop::Win32::HotkeyManager::winKeyTapped, &app, []() {
@@ -499,11 +548,12 @@ int main(int argc, char* argv[]) {
         QCoreApplication::quit();
     });
 
-    QObject::connect(&app, &QCoreApplication::aboutToQuit, [&restoringShell, &keepTaskbarHidden, &appBarManager, &windowTracker, &nativeTaskmanHost, trayIcon]() {
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, [&restoringShell, &keepTaskbarHidden, &appBarManager, &windowTracker, &nativeTaskmanHost, trayIconHolder]() {
+        g_bootFinished.store(true);
         restoringShell = true;
         keepTaskbarHidden = false;
-        if (trayIcon) {
-            trayIcon->hide();
+        if (*trayIconHolder) {
+            (*trayIconHolder)->hide();
         }
         SekaiPop::Quickshell::QsWindowManager::shutdown();
         nativeTaskmanHost.release();
@@ -540,6 +590,7 @@ int main(int argc, char* argv[]) {
         QQmlApplicationEngine engine;
         if (auto* wm = SekaiPop::Quickshell::QsWindowManager::instance()) {
             wm->setQmlEngine(&engine);
+            wm->setAllowBootCurtainCapture(!isTestRun || wantCaptureCurtain);
         }
         auto* iconProvider = new SekaiPop::Win32::WinIconProvider();
         engine.addImageProvider(QStringLiteral("winicon"), iconProvider);
@@ -561,7 +612,8 @@ int main(int argc, char* argv[]) {
         qsDeps.windowTracker = &windowTracker;
 
         const qint64 tBeforeSetup = startupTimer.elapsed();
-        const QUrl shellUrl = SekaiPop::Quickshell::setupQuickshellEngine(engine, qsDeps);
+        SekaiPop::Quickshell::QsDeferredBoot* deferredBoot = nullptr;
+        const QUrl shellUrl = SekaiPop::Quickshell::setupQuickshellEngine(engine, qsDeps, &deferredBoot);
         const qint64 tAfterSetup = startupTimer.elapsed();
 
         QObject::connect(
@@ -571,34 +623,79 @@ int main(int argc, char* argv[]) {
             []() { QCoreApplication::exit(-1); },
             Qt::QueuedConnection
         );
-        engine.load(shellUrl);
+        const qint64 tBeforeCompile = startupTimer.elapsed();
+        QQmlComponent rootComp(&engine, shellUrl);
+        const qint64 tAfterCompile = startupTimer.elapsed();
+        if (rootComp.isError()) {
+            for (const QQmlError& err : rootComp.errors()) {
+                qCritical("STARTUP: shell.qml compile error: %s", qPrintable(err.toString()));
+            }
+            return -1;
+        }
+        QObject* rootObj = rootComp.create(engine.rootContext());
+        if (!rootObj) {
+            qCritical("STARTUP: shell.qml create() returned null");
+            return -1;
+        }
+        rootObj->setParent(&engine);
         const qint64 tAfterLoad = startupTimer.elapsed();
-        qInfo("STARTUP: engine.load(%s) finished rootObjects=%lld (cpp=%lldms setup=%lldms load=%lldms total=%lldms)",
-              qPrintable(shellUrl.toString()),
-              static_cast<long long>(engine.rootObjects().size()),
+        qInfo("STARTUP: shell.qml loaded (cpp=%lldms setup=%lldms compile=%lldms create=%lldms total=%lldms)",
               tBeforeSetup,
               tAfterSetup - tBeforeSetup,
-              tAfterLoad - tAfterSetup,
+              tAfterCompile - tBeforeCompile,
+              tAfterLoad - tAfterCompile,
               tAfterLoad);
 
+        auto curtainDropSignaled = std::make_shared<bool>(false);
+        auto signalCurtainDrop = [curtainDropSignaled, startupTimer](const char* reason) {
+            if (*curtainDropSignaled) {
+                return;
+            }
+            *curtainDropSignaled = true;
+            qInfo("STARTUP: CurtainDrop (%s) at %lldms", reason, startupTimer.elapsed());
+            HANDLE hEvt = OpenEventW(EVENT_MODIFY_STATE, FALSE, L"Local\\SekaiPopShell_CurtainDrop_v1");
+            if (hEvt) {
+                SetEvent(hEvt);
+                CloseHandle(hEvt);
+            }
+        };
+
         auto uiReadySignaled = std::make_shared<bool>(false);
-        auto signalUiReady = [uiReadySignaled, startupTimer](const char* reason) {
+        auto signalUiReady = [uiReadySignaled, startupTimer, deferredBoot, taskbarGuard, initTrayIconOnce, &app, signalCurtainDrop](const char* reason) {
             if (*uiReadySignaled) {
                 return;
             }
             *uiReadySignaled = true;
+            g_bootFinished.store(true);
             qInfo("STARTUP: UI ready (%s) at %lldms", reason, startupTimer.elapsed());
-            // Wake SekaiPopBoot watchdog so deferred Windows startup apps can launch now
+            // Wake SekaiPopBoot watchdog so prefetch stops & deferred Windows startup apps can launch
             HANDLE hEvt = OpenEventW(EVENT_MODIFY_STATE, FALSE, L"Local\\SekaiPopShell_UiReady_v1");
             if (hEvt) {
                 SetEvent(hEvt);
                 CloseHandle(hEvt);
             }
             SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
+            // Launch micro-batched Tier-2 singletons & DeferredWidgets right after Wallpaper + Bar paint
+            if (deferredBoot) {
+                deferredBoot->startAsync();
+            }
+            // Start periodic taskbar guard & system tray icon cleanly off the critical boot path
+            QTimer::singleShot(120, &app, [taskbarGuard, initTrayIconOnce]() {
+                if (taskbarGuard && !taskbarGuard->isActive()) {
+                    taskbarGuard->start();
+                }
+                initTrayIconOnce();
+            });
+            if (std::strcmp(reason, "failsafe") == 0) {
+                signalCurtainDrop("failsafe");
+            }
         };
         if (auto* wm = SekaiPop::Quickshell::QsWindowManager::instance()) {
             QObject::connect(wm, &SekaiPop::Quickshell::QsWindowManager::uiReady, &app, [signalUiReady]() {
                 signalUiReady("wallpaper+bar");
+            });
+            QObject::connect(wm, &SekaiPop::Quickshell::QsWindowManager::curtainDropReady, &app, [signalCurtainDrop]() {
+                signalCurtainDrop("frameSwapped");
             });
             wm->scheduleMemoryTrim(7000);
         }
