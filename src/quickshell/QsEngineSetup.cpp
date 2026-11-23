@@ -284,7 +284,7 @@ void stageQuickshellHelperModules(const QString& stageRoot) {
 QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const QString& exeDir, const QString& stageRoot, const QString& stageQsDir) {
     // Fast fingerprint check FIRST — avoids running stageQuickshellHelperModules(),
     // ensureDirJunction() x3, and scanning 540+ QML files on every warm startup (< 2ms).
-    static constexpr const char* kStageVersion = "v47-win-instant-boot-r3";
+    static constexpr const char* kStageVersion = "v48-win-dock-appname-fix";
     QElapsedTimer stageTimer;
     stageTimer.start();
 
@@ -4197,6 +4197,39 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                                        "    readonly property real windowAcross: (dockWindow.editing || EditMode.screenName !== \"\")\n"
                                        "        ? dockWindow.fullWindowAcross\n"
                                        "        : Math.min(dockWindow.fullWindowAcross, Math.round(560 * dockWindow.uiScale))")
+                    );
+                    // Never expose Windows icon URLs ("image://winicon/app/...") as a Dock hover label when
+                    // AppSource is still scanning; fall back to clean class/app name and reactively update
+                    // pinnedSlots as soon as DesktopEntries finishes scanning Start Menu + UWP apps.
+                    text.replace(
+                        QStringLiteral(
+                            "    function appName(cls, fallback) {\n"
+                            "        let entry = null\n"
+                            "        try {\n"
+                            "            entry = DesktopEntries.heuristicLookup(cls)\n"
+                            "        } catch (e) {}\n"
+                            "        return (entry && entry.name) || fallback\n"
+                            "    }"
+                        ),
+                        QStringLiteral(
+                            "    function appName(cls, fallback) {\n"
+                            "        let entry = null\n"
+                            "        try {\n"
+                            "            entry = DesktopEntries.heuristicLookup(cls)\n"
+                            "        } catch (e) {}\n"
+                            "        if (entry && entry.name)\n"
+                            "            return entry.name\n"
+                            "        const cleanCls = String(cls || \"\").trim()\n"
+                            "        if (cleanCls !== \"\" && cleanCls.indexOf(\"://\") < 0)\n"
+                            "            return cleanCls\n"
+                            "        const cleanFb = String(fallback || \"\").trim()\n"
+                            "        return (cleanFb !== \"\" && cleanFb.indexOf(\"://\") < 0) ? cleanFb : cleanCls\n"
+                            "    }"
+                        )
+                    );
+                    text.replace(
+                        QStringLiteral("    readonly property var pinnedSlots: {\n        const out = []"),
+                        QStringLiteral("    readonly property var pinnedSlots: {\n        void (DesktopEntries.applications ? DesktopEntries.applications.values.length : 0)\n        const out = []")
                     );
                 }
 
