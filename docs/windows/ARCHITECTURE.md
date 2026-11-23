@@ -44,7 +44,7 @@ SekaiPop for Windows is a native C++20 application built on Qt 6 Quick/QML and W
 ## Startup Speed & Graphics Optimization
 
 - **Shared D3D11 QRhi Graphics Device (`QsWindowing.cpp`)**: Shares a single low-power Direct3D 11 QRhi device across all shell `QQuickWindow` instances under `QSG_RENDER_LOOP=basic`, reducing thread count and GPU/RAM overhead substantially.
-- **Fast Boot & Deferred Startup Apps (`SekaiPopBoot.cpp`, `main.cpp`)**: Boosts `SekaiPopShell.exe` to `ABOVE_NORMAL_PRIORITY_CLASS` during boot and signals the named Win32 event `Local\SekaiPopShell_UiReady_v1` as soon as the Wallpaper and Bar are rendered. `SekaiPopBoot.exe` holds heavy Windows startup apps until that event fires, then launches them staggered at `BELOW_NORMAL_PRIORITY_CLASS`.
+- **Fast Boot & Deferred Startup Apps (`SekaiPopBoot.cpp`, `main.cpp`)**: Boosts `SekaiPopShell.exe` to `ABOVE_NORMAL_PRIORITY_CLASS` during boot and signals the named Win32 event `Local\SekaiPopShell_UiReady_v1` as soon as the Wallpaper and Bar are rendered. `SekaiPopBoot.exe` holds enabled Windows startup apps until that event fires, checks Windows Task Manager's `Explorer\StartupApproved` (`Run`, `Run32`, and `StartupFolder` in `HKCU` and `HKLM`) so any disabled startup entry is skipped, and launches remaining enabled apps staggered at `BELOW_NORMAL_PRIORITY_CLASS`.
 - **URL-Lazy QML Staging (`QsEngineSetup.cpp`, `QsTypes.cpp`)**: Uses a fast production fingerprint check (`0 ms` cache hit on warm boots) and defers non-critical overlays, Bar popups, Dock initialization, Settings pages, QuickPanel, and Desktop Widgets behind URL-based `QsLazyLoader` components so initial UI appears in roughly 3–4 seconds.
 
 ---

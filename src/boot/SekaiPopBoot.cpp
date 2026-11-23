@@ -66,9 +66,48 @@ bool isSekaiPopCommand(const std::wstring& cmd) {
            low.find(L"sekaipopboot") != std::wstring::npos;
 }
 
-void runRegistryRunKey(HKEY root, const wchar_t* subKey) {
+enum class StartupApprovalState {
+    NotFound,
+    Enabled,
+    Disabled
+};
+
+// Queries Windows Task Manager's StartupApproved binary flag (REG_BINARY, typically 12 bytes).
+// In Windows Explorer, byte 0 bit 0 (0x01) marks a disabled item (e.g. 0x03, 0x07),
+// whereas even values (0x02, 0x06) mark an enabled item.
+StartupApprovalState queryStartupApproval(HKEY root, const wchar_t* approvedSubKey, const wchar_t* itemName) {
+    if (!approvedSubKey || !itemName || !itemName[0]) {
+        return StartupApprovalState::NotFound;
+    }
     HKEY hKey = nullptr;
-    if (RegOpenKeyExW(root, subKey, 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
+    if (RegOpenKeyExW(root, approvedSubKey, 0, KEY_READ | KEY_WOW64_64KEY, &hKey) != ERROR_SUCCESS) {
+        return StartupApprovalState::NotFound;
+    }
+    BYTE buf[64] = {};
+    DWORD cb = sizeof(buf);
+    DWORD type = 0;
+    LONG rc = RegQueryValueExW(hKey, itemName, nullptr, &type, buf, &cb);
+    RegCloseKey(hKey);
+    if (rc != ERROR_SUCCESS || type != REG_BINARY || cb < 1) {
+        return StartupApprovalState::NotFound;
+    }
+    return ((buf[0] & 0x01) != 0) ? StartupApprovalState::Disabled : StartupApprovalState::Enabled;
+}
+
+bool isStartupItemDisabled(HKEY primaryRoot, const wchar_t* approvedSubKey, const wchar_t* itemName) {
+    if (queryStartupApproval(primaryRoot, approvedSubKey, itemName) == StartupApprovalState::Disabled) {
+        return true;
+    }
+    if (primaryRoot != HKEY_CURRENT_USER &&
+        queryStartupApproval(HKEY_CURRENT_USER, approvedSubKey, itemName) == StartupApprovalState::Disabled) {
+        return true;
+    }
+    return false;
+}
+
+void runRegistryRunKey(HKEY root, const wchar_t* subKey, const wchar_t* approvedSubKey) {
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(root, subKey, 0, KEY_READ | KEY_WOW64_64KEY, &hKey) != ERROR_SUCCESS) {
         return;
     }
 
@@ -76,7 +115,7 @@ void runRegistryRunKey(HKEY root, const wchar_t* subKey) {
     wchar_t valName[512] = {};
     BYTE data[4096] = {};
     for (;;) {
-        DWORD valNameLen = static_cast<DWORD>(std::size(valName));
+        DWORD valNameLen = static_cast<DWORD>(std::size(valName) - 1);
         DWORD dataLen = sizeof(data) - sizeof(wchar_t);
         DWORD type = 0;
         LONG rc = RegEnumValueW(hKey, index++, valName, &valNameLen, nullptr, &type, data, &dataLen);
@@ -86,8 +125,15 @@ void runRegistryRunKey(HKEY root, const wchar_t* subKey) {
         if (rc != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ) || dataLen < sizeof(wchar_t)) {
             continue;
         }
+        valName[valNameLen] = L'\0';
         data[dataLen] = 0;
         data[dataLen + 1] = 0;
+
+        // Respect Task Manager / Windows Settings "Startup apps" Disabled state.
+        if (isStartupItemDisabled(root, approvedSubKey, valName)) {
+            continue;
+        }
+
         std::wstring rawCmd(reinterpret_cast<const wchar_t*>(data));
         if (rawCmd.empty() || isSekaiPopCommand(rawCmd)) {
             continue;
@@ -105,8 +151,8 @@ void runRegistryRunKey(HKEY root, const wchar_t* subKey) {
         if (g_shuttingDown.load()) {
             break;
         }
-        // Launch standard startup entry asynchronously at below-normal priority with light stagger
-        // so heavy background apps (Docker Desktop, Discord, WARP) never starve the shell UI.
+        // Launch enabled startup entry asynchronously at below-normal priority with light stagger
+        // so heavy background apps never starve the shell UI.
         STARTUPINFOW si = {};
         si.cb = sizeof(si);
         PROCESS_INFORMATION pi = {};
@@ -121,13 +167,16 @@ void runRegistryRunKey(HKEY root, const wchar_t* subKey) {
     RegCloseKey(hKey);
 }
 
-void runStartupFolder(REFKNOWNFOLDERID folderId) {
+void runStartupFolder(REFKNOWNFOLDERID folderId, HKEY approvedRoot) {
     PWSTR pathPtr = nullptr;
     if (FAILED(SHGetKnownFolderPath(folderId, 0, nullptr, &pathPtr)) || !pathPtr) {
         return;
     }
     std::wstring folder(pathPtr);
     CoTaskMemFree(pathPtr);
+
+    constexpr const wchar_t* kApprovedFolderKey =
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\StartupFolder";
 
     WIN32_FIND_DATAW fd = {};
     HANDLE hFind = FindFirstFileW((folder + L"\\*").c_str(), &fd);
@@ -138,12 +187,16 @@ void runStartupFolder(REFKNOWNFOLDERID folderId) {
         if (g_shuttingDown.load()) {
             break;
         }
-        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        if ((fd.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) != 0) {
             continue;
         }
         std::wstring name(fd.cFileName);
         std::wstring low = toLowerW(name);
         if (low == L"desktop.ini" || low.find(L"sekaipop") != std::wstring::npos) {
+            continue;
+        }
+        // Respect Task Manager / Windows Settings "Startup apps" Disabled state.
+        if (isStartupItemDisabled(approvedRoot, kApprovedFolderKey, name.c_str())) {
             continue;
         }
         std::wstring full = folder + L"\\" + name;
@@ -171,7 +224,7 @@ void launchWindowsStartupAppsOnce(HANDLE hUiReady) {
     // Keep handle open for process lifetime so the marker stays alive during this logon session.
     std::thread([hThreadEvt]() {
         // Wait until SekaiPopShell signals that Wallpaper + Bar are visible on screen
-        // (with a 15s safety cap), so Docker Desktop / Discord / VPN never starve cold boot.
+        // (with a 15s safety cap), so enabled startup apps never starve cold boot.
         if (hThreadEvt) {
             WaitForSingleObject(hThreadEvt, 15000);
             CloseHandle(hThreadEvt);
@@ -186,11 +239,23 @@ void launchWindowsStartupAppsOnce(HANDLE hUiReady) {
             return;
         }
         CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-        runRegistryRunKey(HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-        runRegistryRunKey(HKEY_LOCAL_MACHINE, L"Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run");
-        runRegistryRunKey(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-        runStartupFolder(FOLDERID_CommonStartup);
-        runStartupFolder(FOLDERID_Startup);
+        runRegistryRunKey(
+            HKEY_LOCAL_MACHINE,
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run"
+        );
+        runRegistryRunKey(
+            HKEY_LOCAL_MACHINE,
+            L"Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run",
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run32"
+        );
+        runRegistryRunKey(
+            HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run"
+        );
+        runStartupFolder(FOLDERID_CommonStartup, HKEY_LOCAL_MACHINE);
+        runStartupFolder(FOLDERID_Startup, HKEY_CURRENT_USER);
         CoUninitialize();
     }).detach();
 }
