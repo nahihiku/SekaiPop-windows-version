@@ -267,7 +267,7 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
     ensureDirJunction(stageQsDir + QStringLiteral("/shaders"), exeDir + QStringLiteral("/shaders"));
 
     // Fast fingerprint check to avoid re-reading 540+ QML files on every startup.
-    static constexpr const char* kStageVersion = "v43-win-dark-pill-narrow-bar-tooltip";
+    static constexpr const char* kStageVersion = "v44-win-visualizer-theme-palette";
     QElapsedTimer stageTimer;
     stageTimer.start();
 
@@ -2858,6 +2858,59 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                     text.replace(
                         QStringLiteral("                                            points: pcEngine.raw"),
                         QStringLiteral("                                            points: pcEngine.demo ? pcEngine.synth(pcEngine.time) : pcEngine.raw")
+                    );
+                    // Make Visualizer themePalette purely follow the active theme/wallpaper across all 3 layers
+                    // (replacing the hardcoded irisColorPink front wave) and have Cover mode fall back to the active
+                    // theme instead of hardcoded Sekai colors when no cover art is present.
+                    text.replace(
+                        QStringLiteral(
+                            "    readonly property var themePalette: {\n"
+                            "        const A = mt.accentCyan, B = mt.accentMint, P = mt.irisColorPink\n"
+                            "        switch (win.style) {\n"
+                            "            case \"ring\": return [A, B, Qt.lighter(A, 1.25)]\n"
+                            "            case \"dots\": return [win.neutralInk, A, P]\n"
+                            "            default: return [A, B, P]\n"
+                            "        }\n"
+                            "    }"
+                        ),
+                        QStringLiteral(
+                            "    readonly property var themePalette: {\n"
+                            "        const A = mt.accentCyan, B = mt.accentMint\n"
+                            "        const C = Qt.lighter(mt.phoneWallMid, 1.25)\n"
+                            "        switch (win.style) {\n"
+                            "            case \"ring\": return [A, B, Qt.lighter(A, 1.25)]\n"
+                            "            case \"dots\": return [win.neutralInk, A, B]\n"
+                            "            default: return [A, B, C]\n"
+                            "        }\n"
+                            "    }"
+                        )
+                    );
+                    text.replace(
+                        QStringLiteral(
+                            "    readonly property var shapeColors: {\n"
+                            "        const mode = VisualizerService.colorMode\n"
+                            "        if (mode === 2) return win.themePalette\n"
+                            "        if (mode === 0 && cover.palette) {\n"
+                            "            const c = cover.palette\n"
+                            "            return win.style === \"dots\" ? [win.neutralInk, c[0], c[1]] : c\n"
+                            "        }\n"
+                            "        return win.attrPalette\n"
+                            "    }"
+                        ),
+                        QStringLiteral(
+                            "    readonly property var shapeColors: {\n"
+                            "        const mode = VisualizerService.colorMode\n"
+                            "        if (mode === 2) return win.themePalette\n"
+                            "        if (mode === 0) {\n"
+                            "            if (cover.palette) {\n"
+                            "                const c = cover.palette\n"
+                            "                return win.style === \"dots\" ? [win.neutralInk, c[0], c[1]] : c\n"
+                            "            }\n"
+                            "            return win.themePalette\n"
+                            "        }\n"
+                            "        return win.attrPalette\n"
+                            "    }"
+                        )
                     );
                 }
 
