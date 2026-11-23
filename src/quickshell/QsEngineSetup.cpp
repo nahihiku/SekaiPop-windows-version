@@ -267,7 +267,7 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
     ensureDirJunction(stageQsDir + QStringLiteral("/shaders"), exeDir + QStringLiteral("/shaders"));
 
     // Fast fingerprint check to avoid re-reading 540+ QML files on every startup.
-    static constexpr const char* kStageVersion = "v39-win-edit-glitch-zorder-bar-fix";
+    static constexpr const char* kStageVersion = "v41-win-previews-bar-discord-clean";
     QElapsedTimer stageTimer;
     stageTimer.start();
 
@@ -475,6 +475,86 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                                        "        easing.type: Easing.InOutCubic"),
                         QStringLiteral("        duration: 260\n"
                                        "        easing.type: Easing.OutCubic")
+                    );
+                    text.replace(
+                        QStringLiteral("    // ===== what each widget looks like =====\n"
+                                       "    property var previewUrls: ({})\n"
+                                       "    property var previewSizes: ({})"),
+                        QStringLiteral("    // ===== what each widget looks like =====\n"
+                                       "    property var previewUrls: ({})\n"
+                                       "    property var previewSizes: ({})\n"
+                                       "    readonly property string previewThemeKey: String(ThemeService.current || \"default\") + \"_\"\n"
+                                       "        + (ThemeService.dark ? \"d\" : \"l\") + \"_\"\n"
+                                       "        + String(Theme.accentMint).replace(\"#\", \"\") + \"_\"\n"
+                                       "        + String(Theme.colBorder).replace(\"#\", \"\")\n"
+                                       "    function loadCachedPreviews() {\n"
+                                       "        const c = Quickshell.loadEditPreviewCache(root.previewThemeKey)\n"
+                                       "        if (!c || !c.urls)\n"
+                                       "            return\n"
+                                       "        const u = Object.assign({}, root.previewUrls)\n"
+                                       "        const z = Object.assign({}, root.previewSizes)\n"
+                                       "        let changed = false\n"
+                                       "        for (const k in c.urls) {\n"
+                                       "            if (!u[k]) {\n"
+                                       "                u[k] = c.urls[k]\n"
+                                       "                z[k] = c.sizes[k]\n"
+                                       "                changed = true\n"
+                                       "            }\n"
+                                       "        }\n"
+                                       "        if (changed) {\n"
+                                       "            root.previewUrls = u\n"
+                                       "            root.previewSizes = z\n"
+                                       "        }\n"
+                                       "    }\n"
+                                       "    onPreviewThemeKeyChanged: {\n"
+                                       "        root.previewUrls = ({})\n"
+                                       "        root.previewSizes = ({})\n"
+                                       "        root.loadCachedPreviews()\n"
+                                       "    }\n"
+                                       "    Component.onCompleted: root.loadCachedPreviews()")
+                    );
+                }
+
+                // Monitor 2 Bar parity on Windows DPI scaling (e.g. 1920x1080 @ 125% = 864 logical px):
+                // lower vertical tighterV threshold from 880 to 700 so Weather, CPU/RAM, and plugins
+                // stay visible identically across Monitor 1 (1.0x) and Monitor 2 (1.25x / 1.5x).
+                if (fi.fileName() == QStringLiteral("Status_Bar.qml")) {
+                    text.replace(
+                        QStringLiteral("readonly property bool tighterV: status_Bar.vertical && content.height < 880"),
+                        QStringLiteral("readonly property bool tighterV: status_Bar.vertical && content.height < 700")
+                    );
+                    text.replace(
+                        QStringLiteral("|| content.height > leftGroup.height + rightGroup.height + centerGroup.implicitHeight + 24"),
+                        QStringLiteral("|| content.height > leftGroup.height + rightGroup.height + centerGroup.implicitHeight + 8")
+                    );
+                }
+
+                // Native Windows Discord Voice bridge (via \\.\pipe\discord-ipc-0..9 inside QsProcess):
+                // auto-activate so tray-minimized Discord is detected without waiting for a visible window,
+                // and surface Discord when authorizing or clicking Open Discord.
+                if (fi.fileName() == QStringLiteral("DiscordVoiceService.qml")) {
+                    text.replace(
+                        QStringLiteral("readonly property var clientClasses: [\"discord\", \"discord-canary\","),
+                        QStringLiteral("readonly property var clientClasses: [\"discord\", \"discord.exe\", \"discord-canary\",")
+                    );
+                    text.replace(
+                        QStringLiteral("    onClientSeenChanged: if (root.clientSeen) root.start(false)"),
+                        QStringLiteral("    onClientSeenChanged: if (root.clientSeen) root.start(false)\n"
+                                       "    Component.onCompleted: Qt.callLater(() => { root.clientSeen = true })")
+                    );
+                    text.replace(
+                        QStringLiteral("    function authorizeAfterFocusRelease() { focusReleaseDelay.restart() }"),
+                        QStringLiteral("    function authorizeAfterFocusRelease() { root.focusClient(); focusReleaseDelay.restart() }")
+                    );
+                    text.replace(
+                        QStringLiteral("        if (address === \"\")\n            return false"),
+                        QStringLiteral("        if (address === \"\") {\n"
+                                       "            try {\n"
+                                       "                const entry = DesktopEntries.heuristicLookup(\"discord\")\n"
+                                       "                if (entry) { entry.execute(); return true }\n"
+                                       "            } catch (e) {}\n"
+                                       "            return false\n"
+                                       "        }")
                     );
                 }
 
@@ -1089,13 +1169,13 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                         ),
                         QStringLiteral(
                             "    property bool didInitialSnap: false\n"
-                            "    property int initialDelay: 520\n"
+                            "    property int initialDelay: EditMode.progress >= 0.92 ? 120 : 520\n"
                             "\n"
                             "    function computeDelay(alreadyOpen) {\n"
                             "        let h = 0\n"
                             "        for (let i = 0; i < root.widgetId.length; i++)\n"
                             "            h = (h * 31 + root.widgetId.charCodeAt(i)) & 0x7fffffff\n"
-                            "        return alreadyOpen ? (40 + (h % 10) * 55) : (480 + (h % 10) * 75)\n"
+                            "        return alreadyOpen ? 100 : (460 + (h % 8) * 65)\n"
                             "    }\n"
                             "\n"
                             "    interval: root.didInitialSnap ? 12000 : root.initialDelay\n"
@@ -1107,20 +1187,17 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                             "\n"
                             "    onWantedChanged: {\n"
                             "        if (root.wanted) {\n"
-                            "            if (!root.shot) {\n"
-                            "                root.didInitialSnap = false\n"
-                            "                root.initialDelay = root.computeDelay(EditMode.progress >= 0.95)\n"
-                            "            }\n"
+                            "            root.didInitialSnap = false\n"
+                            "            root.initialDelay = root.computeDelay(EditMode.progress >= 0.92)\n"
                             "        } else if (!EditMode.active) {\n"
                             "            root.didInitialSnap = false\n"
-                            "            EditMode.setPreview(root.widgetId, \"\", 0, 0)\n"
                             "            root.shot = null\n"
                             "        }\n"
                             "    }\n"
                             "\n"
                             "    function snap() {\n"
-                            "        if (EditMode.progress < 0.95 || EditGrid.phase === \"drag\" || EditMode.dragId !== \"\") {\n"
-                            "            root.initialDelay = 250\n"
+                            "        if (EditMode.progress < 0.92 || EditGrid.phase === \"drag\" || EditMode.dragId !== \"\") {\n"
+                            "            root.initialDelay = 120\n"
                             "            return\n"
                             "        }\n"
                             "        const t = root.target\n"
@@ -1131,11 +1208,19 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                             "        const capScale = Math.min(k, 220 / Math.max(1, t.width), 140 / Math.max(1, t.height))\n"
                             "        const gw = Math.max(2, Math.round(t.width * capScale))\n"
                             "        const gh = Math.max(2, Math.round(t.height * capScale))\n"
+                            "        const tk = EditMode.previewThemeKey\n"
                             "        t.grabToImage(function (result) {\n"
                             "            if (!result || !EditMode.active)\n"
                             "                return\n"
                             "            root.shot = result\n"
-                            "            EditMode.setPreview(root.widgetId, result.url.toString(), t.width, t.height)\n"
+                            "            const filePath = Quickshell.editPreviewFilePath(tk, root.widgetId)\n"
+                            "            if (filePath && result.saveToFile(filePath)) {\n"
+                            "                Quickshell.saveEditPreviewMeta(tk, root.widgetId, t.width, t.height)\n"
+                            "                EditMode.setPreview(root.widgetId, \"\", 0, 0)\n"
+                            "                EditMode.setPreview(root.widgetId, \"file:///\" + filePath, t.width, t.height)\n"
+                            "            } else {\n"
+                            "                EditMode.setPreview(root.widgetId, result.url.toString(), t.width, t.height)\n"
+                            "            }\n"
                             "        }, Qt.size(gw, gh))\n"
                             "    }"
                         )
@@ -1708,40 +1793,102 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                                        "        }\n"
                                        "    }")
                     );
-                    // Never force-compile & allocate full-screen 1920x1080 D3D11 windows for DISABLED
-                    // desktop widgets just to take a shelf thumbnail on Edit Desktop enter; disabled
-                    // widgets already display their crisp Material icon in EditTraySlot until added.
+                    // Staggered 1-at-a-time background preview capture for DISABLED desktop widgets
+                    // that are not yet cached on disk for the current theme. Runs only AFTER enterAnim
+                    // finishes so entering Edit Desktop stays instant (0 extra swapchains on open),
+                    // saves each thumbnail PNG to disk cache, and immediately unloads the temporary widget.
+                    text.replace(
+                        QStringLiteral("    LazyLoader { id: editTrayLoader; property bool warmed: false; active: warmed || EditMode.screenName !== \"\"; source: Qt.resolvedUrl(\"modules/sekai/editMode/EditTray.qml\") }"),
+                        QStringLiteral("    property string previewCaptureId: \"\"\n"
+                                       "    property var previewTried: ({})\n"
+                                       "    property double previewCaptureStartedAt: 0\n"
+                                       "    function stepPreviewCapture() {\n"
+                                       "        if (!EditMode.active || EditMode.progress < 0.92 || EditMode.currentTab !== \"widgets\" || EditGrid.phase === \"drag\") {\n"
+                                       "            if (shellRoot.previewCaptureId !== \"\")\n"
+                                       "                shellRoot.previewCaptureId = \"\"\n"
+                                       "            return\n"
+                                       "        }\n"
+                                       "        const cur = shellRoot.previewCaptureId\n"
+                                       "        if (cur !== \"\") {\n"
+                                       "            const done = !!EditMode.previewUrls[cur] || EditMode.widgetShown(cur)\n"
+                                       "            const timedOut = (Date.now() - shellRoot.previewCaptureStartedAt) > 2200\n"
+                                       "            if (!done && !timedOut)\n"
+                                       "                return\n"
+                                       "            const t = Object.assign({}, shellRoot.previewTried)\n"
+                                       "            t[cur] = true\n"
+                                       "            shellRoot.previewTried = t\n"
+                                       "            shellRoot.previewCaptureId = \"\"\n"
+                                       "            return\n"
+                                       "        }\n"
+                                       "        const ids = [\"weathercard\", \"todo\", \"palettecard\", \"lyrics\", \"clock\", \"usercard\", \"calendarcard\", \"visualizer\"]\n"
+                                       "        for (let i = 0; i < ids.length; i++) {\n"
+                                       "            const id = ids[i]\n"
+                                       "            if (!EditMode.widgetShown(id) && !EditMode.previewUrls[id] && !shellRoot.previewTried[id]) {\n"
+                                       "                shellRoot.previewCaptureStartedAt = Date.now()\n"
+                                       "                shellRoot.previewCaptureId = id\n"
+                                       "                return\n"
+                                       "            }\n"
+                                       "        }\n"
+                                       "    }\n"
+                                       "    Timer {\n"
+                                       "        id: previewQueueTimer\n"
+                                       "        interval: 150\n"
+                                       "        repeat: true\n"
+                                       "        running: EditMode.active && EditMode.currentTab === \"widgets\"\n"
+                                       "        onTriggered: shellRoot.stepPreviewCapture()\n"
+                                       "    }\n"
+                                       "    Connections {\n"
+                                       "        target: EditMode\n"
+                                       "        function onActiveChanged() {\n"
+                                       "            if (!EditMode.active) {\n"
+                                       "                shellRoot.previewCaptureId = \"\"\n"
+                                       "                shellRoot.previewTried = ({})\n"
+                                       "            } else {\n"
+                                       "                EditMode.loadCachedPreviews()\n"
+                                       "            }\n"
+                                       "        }\n"
+                                       "        function onPreviewThemeKeyChanged() {\n"
+                                       "            shellRoot.previewCaptureId = \"\"\n"
+                                       "            shellRoot.previewTried = ({})\n"
+                                       "        }\n"
+                                       "        function onPreviewUrlsChanged() {\n"
+                                       "            if (shellRoot.previewCaptureId !== \"\" && EditMode.previewUrls[shellRoot.previewCaptureId])\n"
+                                       "                Qt.callLater(shellRoot.stepPreviewCapture)\n"
+                                       "        }\n"
+                                       "    }\n"
+                                       "    LazyLoader { id: editTrayLoader; property bool warmed: false; active: warmed || EditMode.screenName !== \"\"; source: Qt.resolvedUrl(\"modules/sekai/editMode/EditTray.qml\") }")
+                    );
                     text.replace(
                         QStringLiteral("((TodoService.loaded && TodoService.shown && !todoGate.gone) || EditMode.active || shellRoot.todoResetRequested)"),
-                        QStringLiteral("((TodoService.loaded && TodoService.shown && !todoGate.gone) || shellRoot.todoResetRequested)")
+                        QStringLiteral("((TodoService.loaded && TodoService.shown && !todoGate.gone) || shellRoot.previewCaptureId === \"todo\" || shellRoot.todoResetRequested)")
                     );
                     text.replace(
                         QStringLiteral("((ClockService.loaded && ClockService.shown && !clockGate.gone) || EditMode.active || shellRoot.clockResetRequested)"),
-                        QStringLiteral("((ClockService.loaded && ClockService.shown && !clockGate.gone) || shellRoot.clockResetRequested)")
+                        QStringLiteral("((ClockService.loaded && ClockService.shown && !clockGate.gone) || shellRoot.previewCaptureId === \"clock\" || shellRoot.clockResetRequested)")
                     );
                     text.replace(
                         QStringLiteral("((VisualizerService.loaded && VisualizerService.shown && !visualizerGate.gone) || EditMode.active || shellRoot.visualizerResetRequested)"),
-                        QStringLiteral("((VisualizerService.loaded && VisualizerService.shown && !visualizerGate.gone) || shellRoot.visualizerResetRequested)")
+                        QStringLiteral("((VisualizerService.loaded && VisualizerService.shown && !visualizerGate.gone) || shellRoot.previewCaptureId === \"visualizer\" || shellRoot.visualizerResetRequested)")
                     );
                     text.replace(
                         QStringLiteral("((UserCardService.loaded && UserCardService.shown && !usercardGate.gone) || EditMode.active || shellRoot.userCardResetRequested)"),
-                        QStringLiteral("((UserCardService.loaded && UserCardService.shown && !usercardGate.gone) || shellRoot.userCardResetRequested)")
+                        QStringLiteral("((UserCardService.loaded && UserCardService.shown && !usercardGate.gone) || shellRoot.previewCaptureId === \"usercard\" || shellRoot.userCardResetRequested)")
                     );
                     text.replace(
                         QStringLiteral("((WeatherCardService.loaded && WeatherCardService.shown && !weathercardGate.gone) || EditMode.active || shellRoot.weatherCardResetRequested)"),
-                        QStringLiteral("((WeatherCardService.loaded && WeatherCardService.shown && !weathercardGate.gone) || shellRoot.weatherCardResetRequested)")
+                        QStringLiteral("((WeatherCardService.loaded && WeatherCardService.shown && !weathercardGate.gone) || shellRoot.previewCaptureId === \"weathercard\" || shellRoot.weatherCardResetRequested)")
                     );
                     text.replace(
                         QStringLiteral("((CalendarCardService.loaded && CalendarCardService.shown && !calendarcardGate.gone) || EditMode.active || shellRoot.calendarCardResetRequested)"),
-                        QStringLiteral("((CalendarCardService.loaded && CalendarCardService.shown && !calendarcardGate.gone) || shellRoot.calendarCardResetRequested)")
+                        QStringLiteral("((CalendarCardService.loaded && CalendarCardService.shown && !calendarcardGate.gone) || shellRoot.previewCaptureId === \"calendarcard\" || shellRoot.calendarCardResetRequested)")
                     );
                     text.replace(
                         QStringLiteral("((PaletteService.loaded && PaletteService.shown && !palettecardGate.gone) || EditMode.active || shellRoot.paletteCardResetRequested)"),
-                        QStringLiteral("((PaletteService.loaded && PaletteService.shown && !palettecardGate.gone) || shellRoot.paletteCardResetRequested)")
+                        QStringLiteral("((PaletteService.loaded && PaletteService.shown && !palettecardGate.gone) || shellRoot.previewCaptureId === \"palettecard\" || shellRoot.paletteCardResetRequested)")
                     );
                     text.replace(
                         QStringLiteral("((LyricsService.loaded && LyricsService.shown && !lyricsGate.gone) || EditMode.active || shellRoot.lyricsResetRequested)"),
-                        QStringLiteral("((LyricsService.loaded && LyricsService.shown && !lyricsGate.gone) || shellRoot.lyricsResetRequested)")
+                        QStringLiteral("((LyricsService.loaded && LyricsService.shown && !lyricsGate.gone) || shellRoot.previewCaptureId === \"lyrics\" || shellRoot.lyricsResetRequested)")
                     );
                     text.replace(
                         QStringLiteral("((plg.st.shown && !pluginGate.gone) || EditMode.active)"),

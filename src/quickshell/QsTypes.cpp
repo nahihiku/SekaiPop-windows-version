@@ -7,10 +7,13 @@
 #include <QClipboard>
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QImage>
 #include <QJSValue>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMetaMethod>
 #include <QMetaObject>
 #include <QQmlContext>
@@ -383,6 +386,86 @@ QString QsGlobal::shellPath(const QString& rel) const {
 
 QString QsGlobal::cachePath(const QString& rel) const {
     return m_cacheHome + QStringLiteral("/sekaipop/") + rel;
+}
+
+namespace {
+QString sanitizeCacheToken(const QString& raw) {
+    QString out;
+    out.reserve(raw.size());
+    for (const QChar& ch : raw) {
+        if (ch.isLetterOrNumber() || ch == QLatin1Char('_') || ch == QLatin1Char('-')) {
+            out.append(ch);
+        } else {
+            out.append(QLatin1Char('_'));
+        }
+    }
+    return out.isEmpty() ? QStringLiteral("default") : out;
+}
+} // namespace
+
+QString QsGlobal::editPreviewFilePath(const QString& themeKey, const QString& widgetId) const {
+    const QString dirPath = normalizeWinPath(m_cacheHome) + QStringLiteral("/sekaipop/edit-previews");
+    QDir().mkpath(dirPath);
+    return dirPath + QLatin1Char('/') + sanitizeCacheToken(themeKey) + QLatin1Char('_')
+        + sanitizeCacheToken(widgetId) + QStringLiteral(".png");
+}
+
+void QsGlobal::saveEditPreviewMeta(const QString& themeKey, const QString& widgetId, qreal width, qreal height) const {
+    const QString dirPath = normalizeWinPath(m_cacheHome) + QStringLiteral("/sekaipop/edit-previews");
+    QDir().mkpath(dirPath);
+    const QString idxPath = dirPath + QStringLiteral("/index.json");
+    QJsonObject root;
+    {
+        QFile rf(idxPath);
+        if (rf.open(QIODevice::ReadOnly)) {
+            const QJsonDocument d = QJsonDocument::fromJson(rf.readAll());
+            if (d.isObject()) {
+                root = d.object();
+            }
+        }
+    }
+    const QString safeTheme = sanitizeCacheToken(themeKey);
+    QJsonObject themeObj = root.value(safeTheme).toObject();
+    themeObj.insert(widgetId, QJsonObject{
+        {QStringLiteral("w"), width},
+        {QStringLiteral("h"), height}
+    });
+    root.insert(safeTheme, themeObj);
+    QFile wf(idxPath);
+    if (wf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        wf.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
+    }
+}
+
+QVariantMap QsGlobal::loadEditPreviewCache(const QString& themeKey) const {
+    QVariantMap urls;
+    QVariantMap sizes;
+    const QString dirPath = normalizeWinPath(m_cacheHome) + QStringLiteral("/sekaipop/edit-previews");
+    const QString idxPath = dirPath + QStringLiteral("/index.json");
+    QFile rf(idxPath);
+    if (rf.open(QIODevice::ReadOnly)) {
+        const QJsonDocument d = QJsonDocument::fromJson(rf.readAll());
+        if (d.isObject()) {
+            const QString safeTheme = sanitizeCacheToken(themeKey);
+            const QJsonObject themeObj = d.object().value(safeTheme).toObject();
+            for (auto it = themeObj.constBegin(); it != themeObj.constEnd(); ++it) {
+                const QString wid = it.key();
+                const QJsonObject meta = it.value().toObject();
+                const qreal w = meta.value(QStringLiteral("w")).toDouble();
+                const qreal h = meta.value(QStringLiteral("h")).toDouble();
+                const QString pngPath = dirPath + QLatin1Char('/') + safeTheme + QLatin1Char('_')
+                    + sanitizeCacheToken(wid) + QStringLiteral(".png");
+                if (w > 1.0 && h > 1.0 && QFileInfo::exists(pngPath) && QFileInfo(pngPath).size() > 64) {
+                    urls.insert(wid, QUrl::fromLocalFile(pngPath).toString());
+                    sizes.insert(wid, QVariantMap{{QStringLiteral("w"), w}, {QStringLiteral("h"), h}});
+                }
+            }
+        }
+    }
+    return QVariantMap{
+        {QStringLiteral("urls"), urls},
+        {QStringLiteral("sizes"), sizes}
+    };
 }
 
 // ============================================================================

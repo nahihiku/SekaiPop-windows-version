@@ -1,6 +1,7 @@
 #include <winsock2.h>
 #include "QsIo.h"
 #include "../services/AudioSpectrumSource.h"
+#include "../services/DiscordVoiceBridge.h"
 #include "../services/MatugenEngine.h"
 #include "../services/MediaSource.h"
 #include "../services/QuickSource.h"
@@ -2014,7 +2015,13 @@ void QsProcess::exec(const QVariant& cmd) {
 }
 
 void QsProcess::write(const QString& data) {
-    Q_UNUSED(data);
+    if (m_discordBridge) {
+        m_discordBridge->sendCommand(data);
+        return;
+    }
+    if (m_childProc && m_childProc->state() == QProcess::Running) {
+        m_childProc->write(data.toUtf8());
+    }
 }
 
 void QsProcess::signal(int sig) {
@@ -2057,6 +2064,13 @@ void QsProcess::stopExecution() {
         QNetworkReply* r = m_activeReply;
         m_activeReply = nullptr;
         r->abort();
+    }
+    if (m_discordBridge) {
+        Services::DiscordVoiceBridge* b = m_discordBridge;
+        m_discordBridge = nullptr;
+        b->disconnect(this);
+        b->stop();
+        b->deleteLater();
     }
     if (m_childProc) {
         QProcess* p = m_childProc;
@@ -2187,6 +2201,20 @@ void QsProcess::startExecution() {
             return;
         }
         if (script.contains(QStringLiteral("discord_voice_bridge.py"))) {
+            auto* bridge = new Services::DiscordVoiceBridge(this);
+            m_discordBridge = bridge;
+            connect(bridge, &Services::DiscordVoiceBridge::lineReady, this,
+                    [this, gen](const QString& line) {
+                        if (m_runGeneration != gen || !m_running) {
+                            return;
+                        }
+                        if (auto* sp = qobject_cast<QsSplitParser*>(m_stdout)) {
+                            sp->feedLine(line);
+                        } else if (auto* col = qobject_cast<QsStdioCollector*>(m_stdout)) {
+                            col->appendAndFinish(line + QLatin1Char('\n'));
+                        }
+                    }, Qt::QueuedConnection);
+            bridge->start();
             return;
         }
     }

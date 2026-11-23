@@ -18,6 +18,7 @@ class QProcess;
 
 namespace SekaiPop::Services {
 class AudioSpectrumSource;
+class DiscordVoiceBridge;
 class MediaSource;
 class QuickSource;
 class StatusIconsService;
@@ -177,6 +178,7 @@ private:
     QPointer<QObject> m_stderr;
     QPointer<QNetworkReply> m_activeReply;
     QPointer<QProcess> m_childProc;
+    QPointer<Services::DiscordVoiceBridge> m_discordBridge;
     QByteArray m_childStdoutBuf;
     QString m_lastStreamLine;
 };

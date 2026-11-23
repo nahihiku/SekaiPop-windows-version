@@ -96,6 +96,9 @@ public:
     Q_INVOKABLE void reload(bool hard = false);
     Q_INVOKABLE QString shellPath(const QString& rel) const;
     Q_INVOKABLE QString cachePath(const QString& rel) const;
+    Q_INVOKABLE QString editPreviewFilePath(const QString& themeKey, const QString& widgetId) const;
+    Q_INVOKABLE void saveEditPreviewMeta(const QString& themeKey, const QString& widgetId, qreal width, qreal height) const;
+    Q_INVOKABLE QVariantMap loadEditPreviewCache(const QString& themeKey) const;
 
 Q_SIGNALS:
     void screensChanged();

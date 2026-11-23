@@ -96,6 +96,8 @@ set(SOURCES
     src/services/TodoService.cpp
     src/services/WeatherSource.h
     src/services/WeatherSource.cpp
+    src/services/DiscordVoiceBridge.h
+    src/services/DiscordVoiceBridge.cpp
     resources/SekaiPopShell.rc
 )
 
@@ -148,6 +150,7 @@ target_link_libraries(SekaiPopShell PRIVATE
     mfreadwrite
     mfuuid
     d3d11
+    winhttp
 )
 
 # Compile all SekaiPop shaders with Qt6::ShaderTools so Direct3D 11 / Vulkan / OpenGL
