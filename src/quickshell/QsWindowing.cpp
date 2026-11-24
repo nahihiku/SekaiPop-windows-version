@@ -258,6 +258,7 @@ void QsPanelWindow::setQsVisible(bool v) {
         Q_EMIT qsVisibleChanged();
     }
     if (!v && QWindow::isVisible()) {
+        setMaskHovered(false);
         QQuickWindow::setVisible(false);
     }
     if (v) {
@@ -617,33 +618,53 @@ void QsPanelWindow::setClickThrough(bool transparent) {
     }
 }
 
-void QsPanelWindow::updateHitTest(const QPoint& globalPhysicalCursor) {
+void QsPanelWindow::setMaskHovered(bool hovered) {
+    if (m_maskHovered != hovered) {
+        m_maskHovered = hovered;
+        Q_EMIT maskHoveredChanged();
+    }
+}
+
+void QsPanelWindow::updateHitTest(const QPoint& globalPhysicalCursor, bool blockedByOverlay) {
     if (!isVisible()) {
+        setMaskHovered(false);
         return;
     }
     if (!m_mask) {
         setClickThrough(false);
+        setMaskHovered(false);
         return;
     }
     if (mouseGrabberItem() != nullptr) {
         setClickThrough(false);
+        setMaskHovered(true);
         return;
     }
     if (m_mask->coversWholeRect(QSizeF(width(), height()))) {
         setClickThrough(false);
+        HWND hwndWhole = reinterpret_cast<HWND>(winId());
+        RECT wrc = {};
+        const bool insideWhole = !blockedByOverlay && hwndWhole && GetWindowRect(hwndWhole, &wrc) &&
+            globalPhysicalCursor.x() >= wrc.left && globalPhysicalCursor.x() < wrc.right &&
+            globalPhysicalCursor.y() >= wrc.top && globalPhysicalCursor.y() < wrc.bottom;
+        setMaskHovered(insideWhole);
         return;
     }
     HWND hwnd = reinterpret_cast<HWND>(winId());
     if (!hwnd) {
+        setMaskHovered(false);
         return;
     }
     RECT wr = {};
     if (!GetWindowRect(hwnd, &wr)) {
+        setMaskHovered(false);
         return;
     }
     const bool wasClickThrough = m_isClickThrough;
-    if (globalPhysicalCursor.x() < wr.left || globalPhysicalCursor.x() >= wr.right ||
+    if (blockedByOverlay ||
+        globalPhysicalCursor.x() < wr.left || globalPhysicalCursor.x() >= wr.right ||
         globalPhysicalCursor.y() < wr.top || globalPhysicalCursor.y() >= wr.bottom) {
+        setMaskHovered(false);
         setClickThrough(true);
         if (!wasClickThrough) {
             PostMessageW(hwnd, WM_MOUSELEAVE, 0, 0);
@@ -656,18 +677,20 @@ void QsPanelWindow::updateHitTest(const QPoint& globalPhysicalCursor) {
         static_cast<qreal>(globalPhysicalCursor.y() - wr.top) / dpr
     );
     const bool hit = m_mask->containsPoint(localPt);
+    const bool anyBtnDown =
+        ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) ||
+        ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0) ||
+        ((GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0);
+    // Track cursor hover inside masked regions natively via OS GetCursorPos so Win32
+    // WS_EX_LAYERED / DirectComposition hover quirks can never swallow an edge reveal,
+    // while ignoring drags/text-selection started outside the panel.
+    const bool wantMaskHover = hit && (!anyBtnDown || m_maskHovered);
+    setMaskHovered(wantMaskHover);
     setClickThrough(!hit);
-    if (wasClickThrough && hit) {
-        const bool anyBtnDown =
-            ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) ||
-            ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0) ||
-            ((GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0);
-        const POINT gPt{ globalPhysicalCursor.x(), globalPhysicalCursor.y() };
-        if (!anyBtnDown && WindowFromPoint(gPt) == hwnd) {
-            POINT cpt = gPt;
-            ScreenToClient(hwnd, &cpt);
-            PostMessageW(hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(cpt.x, cpt.y));
-        }
+    if (wasClickThrough && hit && !anyBtnDown) {
+        POINT cpt{ globalPhysicalCursor.x(), globalPhysicalCursor.y() };
+        ScreenToClient(hwnd, &cpt);
+        PostMessageW(hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(cpt.x, cpt.y));
     } else if (!wasClickThrough && !hit) {
         PostMessageW(hwnd, WM_MOUSELEAVE, 0, 0);
     }
@@ -1899,9 +1922,44 @@ void QsWindowManager::pollHitTests() {
     m_hasCursorPos = true;
     m_hitTestDirty = false;
 
+    bool cursorInOverlay = false;
+    for (QsPanelWindow* ow : std::as_const(m_panels)) {
+        if (!ow || !ow->isVisible() || !ow->winId()) {
+            continue;
+        }
+        WlrLayershellAttached* ols = ow->layerShell();
+        if (!ols || ols->layer() != WlrLayer::Overlay) {
+            continue;
+        }
+        HWND ohwnd = reinterpret_cast<HWND>(ow->winId());
+        RECT owr = {};
+        if (!ohwnd || !GetWindowRect(ohwnd, &owr)) {
+            continue;
+        }
+        if (cursor.x() < owr.left || cursor.x() >= owr.right ||
+            cursor.y() < owr.top || cursor.y() >= owr.bottom) {
+            continue;
+        }
+        if (ow->mask()) {
+            const qreal odpr = qMax<qreal>(0.5, ow->devicePixelRatio());
+            const QPointF opt(
+                static_cast<qreal>(cursor.x() - owr.left) / odpr,
+                static_cast<qreal>(cursor.y() - owr.top) / odpr
+            );
+            if (!ow->mask()->containsPoint(opt)) {
+                continue;
+            }
+        }
+        cursorInOverlay = true;
+        break;
+    }
+
     for (QsPanelWindow* w : std::as_const(m_panels)) {
         if (w && w->isVisible() && (w->mask() != nullptr || w->isClickThrough())) {
-            w->updateHitTest(cursor);
+            WlrLayershellAttached* ls = w->layerShell();
+            const int layer = ls ? ls->layer() : WlrLayer::Top;
+            const bool blocked = (layer < WlrLayer::Overlay) && (cursorInOverlay || isPanelOnFullscreenMonitor(w));
+            w->updateHitTest(cursor, blocked);
         }
     }
 }

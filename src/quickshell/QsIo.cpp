@@ -2623,7 +2623,7 @@ void QsProcess::startExecution() {
                             HMONITOR hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
                             MONITORINFOEXW mi = {};
                             mi.cbSize = sizeof(mi);
-                            QScreen* matchedScr = primaryScr;
+                            QScreen* matchedScr = nullptr;
                             if (hMon && GetMonitorInfoW(hMon, &mi)) {
                                 const QString dev = QString::fromWCharArray(mi.szDevice);
                                 for (int i = 0; i < screens.size(); ++i) {
@@ -2632,6 +2632,27 @@ void QsProcess::startExecution() {
                                         monIdx = i;
                                         break;
                                     }
+                                }
+                                if (!matchedScr) {
+                                    const QPoint monCenter(
+                                        (mi.rcMonitor.left + mi.rcMonitor.right) / 2,
+                                        (mi.rcMonitor.top + mi.rcMonitor.bottom) / 2
+                                    );
+                                    for (int i = 0; i < screens.size(); ++i) {
+                                        QScreen* s = screens.at(i);
+                                        if (!s) continue;
+                                        const QRect g = s->geometry();
+                                        const qreal sdpr = qMax<qreal>(0.5, s->devicePixelRatio());
+                                        const QRect phys(g.x(), g.y(), qRound(g.width() * sdpr), qRound(g.height() * sdpr));
+                                        if (phys.contains(monCenter) || g.contains(monCenter)) {
+                                            matchedScr = s;
+                                            monIdx = i;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (!matchedScr) {
+                                    matchedScr = primaryScr;
                                 }
                                 if (matchedScr) {
                                     const qreal dpr = qMax<qreal>(0.5, matchedScr->devicePixelRatio());

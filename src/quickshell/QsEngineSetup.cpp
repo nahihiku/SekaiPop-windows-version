@@ -284,7 +284,7 @@ void stageQuickshellHelperModules(const QString& stageRoot) {
 QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const QString& exeDir, const QString& stageRoot, const QString& stageQsDir) {
     // Fast fingerprint check FIRST — avoids running stageQuickshellHelperModules(),
     // ensureDirJunction() x3, and scanning 540+ QML files on every warm startup (< 2ms).
-    static constexpr const char* kStageVersion = "v49-win-smart-dock-r2";
+    static constexpr const char* kStageVersion = "v50-win-smart-dock-maskhover";
     QElapsedTimer stageTimer;
     stageTimer.start();
 
@@ -4233,10 +4233,10 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                     );
                     // Smart-hide / Auto-hide Windows polish:
                     // 1) Yield automatically while QuickPanel or Overview is open (zero overlay collision).
-                    // 2) Add an 85 ms anti-accidental dwell on the slim edge strip so brushing past the
-                    //    bottom edge while working in apps never pops up the Dock unexpectedly.
-                    // 3) Keep hotZone flush against the physical screen edge (unless Bar is on that same edge),
-                    //    with a 1/255 alpha DWM hit surface and an ultra-subtle 3 px home-bar indicator while tucked.
+                    // 2) Drive edge reveal + leave directly from native OS cursor maskHovered (immune to Win32
+                    //    WS_EX_LAYERED / DirectComposition HoverHandler quirks) with a 65 ms anti-accidental dwell.
+                    // 3) Keep hotZone flush against the Dock window edge (8 px slim strip while tucked, expanding
+                    //    to bridge innerGap seamlessly while revealed so there is zero dead zone under the pill).
                     text.replace(
                         QStringLiteral(
                             "    property bool hoverWin: false\n"
@@ -4248,18 +4248,39 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                             "                                            || (dockWindow.overviewBoard && dockWindow.overviewBoard.item && dockWindow.overviewBoard.item.open))\n"
                             "    property bool hoverWin: false\n"
                             "    property bool hotRevealed: false\n"
+                            "    readonly property bool hotPointerIn: hotZone.on && (hotHover.hovered || (dockWindow.tucked && dockWindow.maskHovered))\n"
+                            "    onHotPointerInChanged: {\n"
+                            "        if (hotPointerIn) {\n"
+                            "            if (dockWindow.tucked)\n"
+                            "                hotDwellTimer.restart()\n"
+                            "            else\n"
+                            "                dockWindow.hotRevealed = true\n"
+                            "        } else {\n"
+                            "            hotDwellTimer.stop()\n"
+                            "            dockWindow.hotRevealed = false\n"
+                            "        }\n"
+                            "    }\n"
+                            "    onMaskHoveredChanged: {\n"
+                            "        if (!maskHovered && !dockWindow.dragging) {\n"
+                            "            dockWindow.hoverWin = false\n"
+                            "            if (!hotHover.hovered)\n"
+                            "                dockWindow.hotRevealed = false\n"
+                            "        }\n"
+                            "    }\n"
                             "    Timer {\n"
                             "        id: hotDwellTimer\n"
-                            "        interval: 85\n"
+                            "        interval: 65\n"
                             "        onTriggered: {\n"
-                            "            if (hotHover.hovered && dockWindow.tucked && !dockWindow.overlayBlocking)\n"
+                            "            if (dockWindow.hotPointerIn && dockWindow.tucked && !dockWindow.overlayBlocking)\n"
                             "                dockWindow.hotRevealed = true\n"
                             "        }\n"
                             "    }\n"
                             "    readonly property bool hovered: dockWindow.tucked\n"
                             "                                    ? dockWindow.hotRevealed\n"
-                            "                                    : (dockWindow.hoverWin || hotHover.hovered || hit.containsMouse\n"
-                            "                                       || dockWindow.cardHovered || dockWindow.mediaCardHovered)"
+                            "                                    : (dockWindow.autoHideOn\n"
+                            "                                       ? (dockWindow.maskHovered || dockWindow.cardHovered || dockWindow.mediaCardHovered)\n"
+                            "                                       : (dockWindow.maskHovered || dockWindow.hoverWin || hotHover.hovered || hit.containsMouse\n"
+                            "                                          || dockWindow.cardHovered || dockWindow.mediaCardHovered))"
                         )
                     );
                     text.replace(
@@ -4281,7 +4302,7 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                                        "    onTuckedChanged: {\n"
                                        "        if (tucked) {\n"
                                        "            hotDwellTimer.stop()\n"
-                                       "            if (!hotHover.hovered)\n"
+                                       "            if (!dockWindow.hotPointerIn)\n"
                                        "                dockWindow.hotRevealed = false\n"
                                        "        }\n"
                                        "    }")
@@ -4299,7 +4320,9 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                     );
                     text.replace(
                         QStringLiteral("        readonly property real thick: Math.max(2, Math.min(fullThick, Math.round(fullThick * zoneFraction)))"),
-                        QStringLiteral("        readonly property real thick: Math.max(6, Math.min(fullThick, Math.round(fullThick * zoneFraction)))")
+                        QStringLiteral("        readonly property real thick: dockWindow.tucked\n"
+                                       "            ? Math.max(8, Math.min(fullThick, Math.round(fullThick * zoneFraction)))\n"
+                                       "            : Math.min(fullThick, Math.max(Math.round(dockWindow.innerGap * dockWindow.uiScale) + 6, Math.round(fullThick * zoneFraction)))")
                     );
                     text.replace(
                         QStringLiteral(
@@ -4309,7 +4332,7 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                             "        }"
                         ),
                         QStringLiteral(
-                            "        // Visually invisible 1/255 alpha surface guarantees reliable Win32 DWM hover hit-testing.\n"
+                            "        // Visually invisible 1/255 alpha surface guarantees reliable Win32 DWM hit-testing.\n"
                             "        Rectangle {\n"
                             "            anchors.fill: parent\n"
                             "            visible: hotZone.on && dockWindow.tucked\n"
@@ -4331,25 +4354,14 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                             "            anchors.topMargin: dockWindow.position === \"top\" ? 2 : 0\n"
                             "            anchors.leftMargin: dockWindow.position === \"left\" ? 2 : 0\n"
                             "            anchors.rightMargin: dockWindow.position === \"right\" ? 2 : 0\n"
-                            "            color: Qt.rgba(1, 1, 1, hotHover.hovered ? 0.72 : 0.34)\n"
+                            "            color: Qt.rgba(1, 1, 1, dockWindow.hotPointerIn ? 0.78 : 0.34)\n"
                             "            border.width: 0.75\n"
-                            "            border.color: Qt.rgba(0, 0, 0, hotHover.hovered ? 0.36 : 0.22)\n"
+                            "            border.color: Qt.rgba(0, 0, 0, dockWindow.hotPointerIn ? 0.40 : 0.22)\n"
                             "            Behavior on color { ColorAnimation { duration: 140 } }\n"
                             "        }\n\n"
                             "        HoverHandler {\n"
                             "            id: hotHover\n"
                             "            enabled: hotZone.on\n"
-                            "            onHoveredChanged: {\n"
-                            "                if (hovered) {\n"
-                            "                    if (dockWindow.tucked)\n"
-                            "                        hotDwellTimer.restart()\n"
-                            "                    else\n"
-                            "                        dockWindow.hotRevealed = true\n"
-                            "                } else {\n"
-                            "                    hotDwellTimer.stop()\n"
-                            "                    dockWindow.hotRevealed = false\n"
-                            "                }\n"
-                            "            }\n"
                             "        }"
                         )
                     );

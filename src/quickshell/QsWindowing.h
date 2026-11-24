@@ -240,6 +240,7 @@ class QsPanelWindow : public QQuickWindow {
     Q_PROPERTY(bool aboveWindows READ aboveWindows WRITE setAboveWindows NOTIFY aboveWindowsChanged)
     Q_PROPERTY(bool focusable READ focusable WRITE setFocusable NOTIFY focusableChanged)
     Q_PROPERTY(QsRegion* mask READ mask WRITE setMask NOTIFY maskChanged)
+    Q_PROPERTY(bool maskHovered READ maskHovered NOTIFY maskHoveredChanged)
 
 public:
     explicit QsPanelWindow(QWindow* parent = nullptr);
@@ -278,9 +279,10 @@ public:
 
     WlrLayershellAttached* layerShell() const;
     bool isClickThrough() const { return m_isClickThrough; }
+    bool maskHovered() const { return m_maskHovered; }
     void scheduleSync();
     void syncNow();
-    void updateHitTest(const QPoint& globalLogicalCursor);
+    void updateHitTest(const QPoint& globalPhysicalCursor, bool blockedByOverlay = false);
 
 Q_SIGNALS:
     void qsVisibleChanged();
@@ -292,9 +294,11 @@ Q_SIGNALS:
     void aboveWindowsChanged();
     void focusableChanged();
     void maskChanged();
+    void maskHoveredChanged();
 
 private:
     void setClickThrough(bool transparent);
+    void setMaskHovered(bool hovered);
 
     QPointer<QsScreen> m_qsScreen;
     QsAnchors* m_anchors = nullptr;
@@ -309,6 +313,7 @@ private:
     bool m_qsVisible = true;
     bool m_syncPending = false;
     bool m_isClickThrough = false;
+    bool m_maskHovered = false;
     bool m_registeredAsBar = false;
     QString m_lastBarEdge;
     int m_lastBarZone = -1;
