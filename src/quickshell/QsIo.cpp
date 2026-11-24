@@ -41,6 +41,7 @@
 
 #include <windows.h>
 #include <bluetoothapis.h>
+#include <dwmapi.h>
 #include <iphlpapi.h>
 #include <shellapi.h>
 #include <shobjidl.h>
@@ -2601,30 +2602,71 @@ void QsProcess::startExecution() {
             } else if (args.contains(QStringLiteral("clients"))) {
                 QJsonArray arr;
                 if (s_windowTracker) {
+                    const QList<QScreen*> screens = QGuiApplication::screens();
+                    QScreen* primaryScr = QGuiApplication::primaryScreen();
                     for (const QVariant& wv : s_windowTracker->openWindows()) {
                         const QVariantMap wm = wv.toMap();
                         const qulonglong hwndVal = wm.value(QStringLiteral("hwnd")).toULongLong();
                         HWND hwnd = reinterpret_cast<HWND>(static_cast<quintptr>(hwndVal));
                         const bool isMin = wm.value(QStringLiteral("minimized")).toBool() || (hwnd && IsIconic(hwnd));
-                        RECT rc = {};
-                        if (hwnd && !isMin) {
-                            GetWindowRect(hwnd, &rc);
+                        DWORD cloaked = 0;
+                        const bool isCloaked = hwnd && !isMin &&
+                            SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) &&
+                            cloaked != 0;
+                        int lx = 0, ly = 0, lw = 0, lh = 0;
+                        int monIdx = 0;
+                        if (hwnd && !isMin && !isCloaked) {
+                            RECT rc = {};
+                            if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &rc, sizeof(rc)))) {
+                                GetWindowRect(hwnd, &rc);
+                            }
+                            HMONITOR hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                            MONITORINFOEXW mi = {};
+                            mi.cbSize = sizeof(mi);
+                            QScreen* matchedScr = primaryScr;
+                            if (hMon && GetMonitorInfoW(hMon, &mi)) {
+                                const QString dev = QString::fromWCharArray(mi.szDevice);
+                                for (int i = 0; i < screens.size(); ++i) {
+                                    if (screens.at(i) && screens.at(i)->name().compare(dev, Qt::CaseInsensitive) == 0) {
+                                        matchedScr = screens.at(i);
+                                        monIdx = i;
+                                        break;
+                                    }
+                                }
+                                if (matchedScr) {
+                                    const qreal dpr = qMax<qreal>(0.5, matchedScr->devicePixelRatio());
+                                    const QRect lg = matchedScr->geometry();
+                                    lx = lg.x() + qRound((rc.left - mi.rcMonitor.left) / dpr);
+                                    ly = lg.y() + qRound((rc.top - mi.rcMonitor.top) / dpr);
+                                    lw = qMax(0, qRound((rc.right - rc.left) / dpr));
+                                    lh = qMax(0, qRound((rc.bottom - rc.top) / dpr));
+                                } else {
+                                    lx = static_cast<int>(rc.left);
+                                    ly = static_cast<int>(rc.top);
+                                    lw = qMax(0, static_cast<int>(rc.right - rc.left));
+                                    lh = qMax(0, static_cast<int>(rc.bottom - rc.top));
+                                }
+                            } else {
+                                lx = static_cast<int>(rc.left);
+                                ly = static_cast<int>(rc.top);
+                                lw = qMax(0, static_cast<int>(rc.right - rc.left));
+                                lh = qMax(0, static_cast<int>(rc.bottom - rc.top));
+                            }
                         }
                         QJsonObject c;
                         c.insert(QStringLiteral("address"), QStringLiteral("0x") + QString::number(hwndVal, 16));
                         c.insert(QStringLiteral("class"), wm.value(QStringLiteral("app")).toString());
                         c.insert(QStringLiteral("title"), wm.value(QStringLiteral("title")).toString());
-                        c.insert(QStringLiteral("at"), QJsonArray{static_cast<int>(rc.left), static_cast<int>(rc.top)});
-                        c.insert(QStringLiteral("size"), QJsonArray{qMax(0, static_cast<int>(rc.right - rc.left)),
-                                                                    qMax(0, static_cast<int>(rc.bottom - rc.top))});
+                        c.insert(QStringLiteral("at"), QJsonArray{lx, ly});
+                        c.insert(QStringLiteral("size"), QJsonArray{lw, lh});
                         QJsonObject ws;
                         const int wsId = isMin ? -99 : wm.value(QStringLiteral("workspace"), s_windowTracker->activeWorkspace()).toInt();
                         ws.insert(QStringLiteral("id"), wsId);
                         ws.insert(QStringLiteral("name"), isMin ? QStringLiteral("special:dockmin") : QString::number(wsId));
                         c.insert(QStringLiteral("workspace"), ws);
-                        c.insert(QStringLiteral("monitor"), 0);
-                        c.insert(QStringLiteral("mapped"), true);
-                        c.insert(QStringLiteral("hidden"), isMin);
+                        c.insert(QStringLiteral("monitor"), monIdx);
+                        c.insert(QStringLiteral("mapped"), !isCloaked);
+                        c.insert(QStringLiteral("hidden"), isMin || isCloaked);
                         arr.append(c);
                     }
                 }

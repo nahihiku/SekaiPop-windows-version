@@ -641,9 +641,13 @@ void QsPanelWindow::updateHitTest(const QPoint& globalPhysicalCursor) {
     if (!GetWindowRect(hwnd, &wr)) {
         return;
     }
+    const bool wasClickThrough = m_isClickThrough;
     if (globalPhysicalCursor.x() < wr.left || globalPhysicalCursor.x() >= wr.right ||
         globalPhysicalCursor.y() < wr.top || globalPhysicalCursor.y() >= wr.bottom) {
         setClickThrough(true);
+        if (!wasClickThrough) {
+            PostMessageW(hwnd, WM_MOUSELEAVE, 0, 0);
+        }
         return;
     }
     const qreal dpr = qMax<qreal>(0.5, devicePixelRatio());
@@ -653,6 +657,20 @@ void QsPanelWindow::updateHitTest(const QPoint& globalPhysicalCursor) {
     );
     const bool hit = m_mask->containsPoint(localPt);
     setClickThrough(!hit);
+    if (wasClickThrough && hit) {
+        const bool anyBtnDown =
+            ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) ||
+            ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0) ||
+            ((GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0);
+        const POINT gPt{ globalPhysicalCursor.x(), globalPhysicalCursor.y() };
+        if (!anyBtnDown && WindowFromPoint(gPt) == hwnd) {
+            POINT cpt = gPt;
+            ScreenToClient(hwnd, &cpt);
+            PostMessageW(hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(cpt.x, cpt.y));
+        }
+    } else if (!wasClickThrough && !hit) {
+        PostMessageW(hwnd, WM_MOUSELEAVE, 0, 0);
+    }
 }
 
 // ============================================================================

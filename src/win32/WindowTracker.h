@@ -59,6 +59,7 @@ Q_SIGNALS:
     void activeWorkspaceChanged();
     void primaryOccludedChanged();
     void fullscreenMonitorsChanged();
+    void windowGeometryChanged();
 
 private:
     static void CALLBACK winEventProc(
@@ -73,6 +74,7 @@ private:
 
     void scheduleRefresh();
     void scheduleNameRefresh();
+    void scheduleGeometryRefresh();
     void pollFullscreenMonitors();
     bool isTrackableAppWindow(HWND hwnd) const;
     QString resolveAppNameForHwnd(HWND hwnd) const;
@@ -82,6 +84,7 @@ private:
     QVector<HWINEVENTHOOK> m_hooks;
     QTimer m_debounce;
     QTimer m_nameDebounce;
+    QTimer m_geomDebounce;
     QTimer m_reconcileTimer;
     QTimer m_fsPollTimer;
     int m_reconcileTicks = 0;

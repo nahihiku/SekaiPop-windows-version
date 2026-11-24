@@ -25,6 +25,9 @@
 #ifndef EVENT_OBJECT_UNCLOAKED
 #define EVENT_OBJECT_UNCLOAKED 0x8018
 #endif
+#ifndef EVENT_OBJECT_LOCATIONCHANGE
+#define EVENT_OBJECT_LOCATIONCHANGE 0x800B
+#endif
 #ifndef DWM_CLOAKED_APP
 #define DWM_CLOAKED_APP 0x00000001
 #endif
@@ -326,6 +329,10 @@ WindowTracker::WindowTracker(QObject* parent)
     m_nameDebounce.setInterval(180);
     connect(&m_nameDebounce, &QTimer::timeout, this, &WindowTracker::refresh);
 
+    m_geomDebounce.setSingleShot(true);
+    m_geomDebounce.setInterval(120);
+    connect(&m_geomDebounce, &QTimer::timeout, this, &WindowTracker::windowGeometryChanged);
+
     m_reconcileTimer.setInterval(3000);
     connect(&m_reconcileTimer, &QTimer::timeout, this, [this]() {
         if (++m_reconcileTicks >= 10) {
@@ -359,6 +366,7 @@ WindowTracker::WindowTracker(QObject* parent)
     installHook(EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZEEND);
     installHook(EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND);
     installHook(EVENT_OBJECT_CREATE, EVENT_OBJECT_HIDE);
+    installHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE);
     installHook(EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_NAMECHANGE);
     installHook(EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED);
 
@@ -397,6 +405,20 @@ void CALLBACK WindowTracker::winEventProc(
             return;
         }
     }
+    if (event == EVENT_OBJECT_LOCATIONCHANGE) {
+        if (!hwnd || !IsWindowVisible(hwnd) || GetAncestor(hwnd, GA_ROOT) != hwnd) {
+            return;
+        }
+        const LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        if ((ex & WS_EX_TOOLWINDOW) != 0 && (ex & WS_EX_APPWINDOW) == 0) {
+            return;
+        }
+        s_instance->scheduleGeometryRefresh();
+        return;
+    }
+    if (event == EVENT_SYSTEM_MOVESIZEEND) {
+        s_instance->scheduleGeometryRefresh();
+    }
     if (event == EVENT_OBJECT_NAMECHANGE) {
         if (!hwnd || !IsWindowVisible(hwnd) || GetAncestor(hwnd, GA_ROOT) != hwnd) {
             return;
@@ -424,6 +446,12 @@ void WindowTracker::scheduleRefresh() {
 void WindowTracker::scheduleNameRefresh() {
     if (!m_debounce.isActive() && !m_nameDebounce.isActive()) {
         m_nameDebounce.start();
+    }
+}
+
+void WindowTracker::scheduleGeometryRefresh() {
+    if (!m_geomDebounce.isActive()) {
+        m_geomDebounce.start();
     }
 }
 

@@ -394,6 +394,9 @@ QsHyprland::QsHyprland(Win32::WindowTracker* tracker, QObject* parent)
         connect(m_tracker, &Win32::WindowTracker::fullscreenMonitorsChanged, this, [this]() {
             scheduleSyncFromTracker(QStringLiteral("fullscreen"));
         });
+        connect(m_tracker, &Win32::WindowTracker::windowGeometryChanged, this, [this]() {
+            Q_EMIT rawEvent(QVariantMap{{QStringLiteral("name"), QStringLiteral("movewindow")}});
+        });
     }
     if (QsGlobal* g = QsGlobal::instance()) {
         connect(g, &QsGlobal::screensChanged, this, [this]() { scheduleSyncFromTracker(); });

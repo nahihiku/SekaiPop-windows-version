@@ -284,7 +284,7 @@ void stageQuickshellHelperModules(const QString& stageRoot) {
 QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const QString& exeDir, const QString& stageRoot, const QString& stageQsDir) {
     // Fast fingerprint check FIRST — avoids running stageQuickshellHelperModules(),
     // ensureDirJunction() x3, and scanning 540+ QML files on every warm startup (< 2ms).
-    static constexpr const char* kStageVersion = "v48-win-dock-appname-fix";
+    static constexpr const char* kStageVersion = "v49-win-smart-dock-r2";
     QElapsedTimer stageTimer;
     stageTimer.start();
 
@@ -4231,6 +4231,128 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                         QStringLiteral("    readonly property var pinnedSlots: {\n        const out = []"),
                         QStringLiteral("    readonly property var pinnedSlots: {\n        void (DesktopEntries.applications ? DesktopEntries.applications.values.length : 0)\n        const out = []")
                     );
+                    // Smart-hide / Auto-hide Windows polish:
+                    // 1) Yield automatically while QuickPanel or Overview is open (zero overlay collision).
+                    // 2) Add an 85 ms anti-accidental dwell on the slim edge strip so brushing past the
+                    //    bottom edge while working in apps never pops up the Dock unexpectedly.
+                    // 3) Keep hotZone flush against the physical screen edge (unless Bar is on that same edge),
+                    //    with a 1/255 alpha DWM hit surface and an ultra-subtle 3 px home-bar indicator while tucked.
+                    text.replace(
+                        QStringLiteral(
+                            "    property bool hoverWin: false\n"
+                            "    readonly property bool hovered: dockWindow.hoverWin || hotHover.hovered || hit.containsMouse\n"
+                            "                                    || dockWindow.cardHovered || dockWindow.mediaCardHovered"
+                        ),
+                        QStringLiteral(
+                            "    readonly property bool overlayBlocking: Boolean((dockWindow.launcher && (dockWindow.launcher.up || dockWindow.launcher.open || dockWindow.launcher.settingsOpen || dockWindow.launcher.wallpapersOpen))\n"
+                            "                                            || (dockWindow.overviewBoard && dockWindow.overviewBoard.item && dockWindow.overviewBoard.item.open))\n"
+                            "    property bool hoverWin: false\n"
+                            "    property bool hotRevealed: false\n"
+                            "    Timer {\n"
+                            "        id: hotDwellTimer\n"
+                            "        interval: 85\n"
+                            "        onTriggered: {\n"
+                            "            if (hotHover.hovered && dockWindow.tucked && !dockWindow.overlayBlocking)\n"
+                            "                dockWindow.hotRevealed = true\n"
+                            "        }\n"
+                            "    }\n"
+                            "    readonly property bool hovered: dockWindow.tucked\n"
+                            "                                    ? dockWindow.hotRevealed\n"
+                            "                                    : (dockWindow.hoverWin || hotHover.hovered || hit.containsMouse\n"
+                            "                                       || dockWindow.cardHovered || dockWindow.mediaCardHovered)"
+                        )
+                    );
+                    text.replace(
+                        QStringLiteral(
+                            "    readonly property bool revealed: !dockWindow.autoHideOn || !dockWindow.wantsHidden || dockWindow.editing\n"
+                            "                                     || dockWindow.hovered || hideGrace.running || dockWindow.dragOver\n"
+                            "                                     || dockWindow.menuOpen || dockWindow.folderOpen || dockWindow.toolOpen !== \"\" || dockWindow.dragging"
+                        ),
+                        QStringLiteral(
+                            "    readonly property bool revealed: !dockWindow.autoHideOn || dockWindow.editing\n"
+                            "                                     || (!dockWindow.overlayBlocking && (!dockWindow.wantsHidden\n"
+                            "                                         || dockWindow.hovered || hideGrace.running || dockWindow.dragOver\n"
+                            "                                         || dockWindow.menuOpen || dockWindow.folderOpen || dockWindow.toolOpen !== \"\" || dockWindow.dragging))"
+                        )
+                    );
+                    text.replace(
+                        QStringLiteral("    readonly property bool tucked: dockWindow.autoHideOn && !dockWindow.revealed && dockWindow.hideOffset > 1"),
+                        QStringLiteral("    readonly property bool tucked: dockWindow.autoHideOn && !dockWindow.revealed && dockWindow.hideOffset > 1\n"
+                                       "    onTuckedChanged: {\n"
+                                       "        if (tucked) {\n"
+                                       "            hotDwellTimer.stop()\n"
+                                       "            if (!hotHover.hovered)\n"
+                                       "                dockWindow.hotRevealed = false\n"
+                                       "        }\n"
+                                       "    }")
+                    );
+                    text.replace(
+                        QStringLiteral("        readonly property bool on: dockWindow.autoHideOn && !dockWindow.editing"),
+                        QStringLiteral("        readonly property bool on: dockWindow.autoHideOn && !dockWindow.editing && !dockWindow.overlayBlocking")
+                    );
+                    text.replace(
+                        QStringLiteral(
+                            "        readonly property real gap: (dockWindow.position === \"bottom\" && SettingsService.flag(\"panel.hotEdge\"))\n"
+                            "          ? Math.round(dockWindow.innerGap * dockWindow.uiScale) : 0"
+                        ),
+                        QStringLiteral("        readonly property real gap: 0")
+                    );
+                    text.replace(
+                        QStringLiteral("        readonly property real thick: Math.max(2, Math.min(fullThick, Math.round(fullThick * zoneFraction)))"),
+                        QStringLiteral("        readonly property real thick: Math.max(6, Math.min(fullThick, Math.round(fullThick * zoneFraction)))")
+                    );
+                    text.replace(
+                        QStringLiteral(
+                            "        HoverHandler {\n"
+                            "            id: hotHover\n"
+                            "            enabled: hotZone.on\n"
+                            "        }"
+                        ),
+                        QStringLiteral(
+                            "        // Visually invisible 1/255 alpha surface guarantees reliable Win32 DWM hover hit-testing.\n"
+                            "        Rectangle {\n"
+                            "            anchors.fill: parent\n"
+                            "            visible: hotZone.on && dockWindow.tucked\n"
+                            "            color: Qt.rgba(0, 0, 0, 1 / 255.0)\n"
+                            "        }\n\n"
+                            "        // Subtle edge home-bar indicator while the Dock is tucked away behind windows.\n"
+                            "        Rectangle {\n"
+                            "            visible: hotZone.on && dockWindow.tucked\n"
+                            "            width: dockWindow.vertical ? 3 : Math.max(56, Math.min(92, Math.round(hotZone.along * 0.22)))\n"
+                            "            height: dockWindow.vertical ? Math.max(56, Math.min(92, Math.round(hotZone.along * 0.22))) : 3\n"
+                            "            radius: 1.5\n"
+                            "            anchors.horizontalCenter: dockWindow.vertical ? undefined : parent.horizontalCenter\n"
+                            "            anchors.verticalCenter: dockWindow.vertical ? parent.verticalCenter : undefined\n"
+                            "            anchors.bottom: dockWindow.position === \"bottom\" ? parent.bottom : undefined\n"
+                            "            anchors.top: dockWindow.position === \"top\" ? parent.top : undefined\n"
+                            "            anchors.left: dockWindow.position === \"left\" ? parent.left : undefined\n"
+                            "            anchors.right: dockWindow.position === \"right\" ? parent.right : undefined\n"
+                            "            anchors.bottomMargin: dockWindow.position === \"bottom\" ? 2 : 0\n"
+                            "            anchors.topMargin: dockWindow.position === \"top\" ? 2 : 0\n"
+                            "            anchors.leftMargin: dockWindow.position === \"left\" ? 2 : 0\n"
+                            "            anchors.rightMargin: dockWindow.position === \"right\" ? 2 : 0\n"
+                            "            color: Qt.rgba(1, 1, 1, hotHover.hovered ? 0.72 : 0.34)\n"
+                            "            border.width: 0.75\n"
+                            "            border.color: Qt.rgba(0, 0, 0, hotHover.hovered ? 0.36 : 0.22)\n"
+                            "            Behavior on color { ColorAnimation { duration: 140 } }\n"
+                            "        }\n\n"
+                            "        HoverHandler {\n"
+                            "            id: hotHover\n"
+                            "            enabled: hotZone.on\n"
+                            "            onHoveredChanged: {\n"
+                            "                if (hovered) {\n"
+                            "                    if (dockWindow.tucked)\n"
+                            "                        hotDwellTimer.restart()\n"
+                            "                    else\n"
+                            "                        dockWindow.hotRevealed = true\n"
+                            "                } else {\n"
+                            "                    hotDwellTimer.stop()\n"
+                            "                    dockWindow.hotRevealed = false\n"
+                            "                }\n"
+                            "            }\n"
+                            "        }"
+                        )
+                    );
                 }
 
                 if (fi.fileName() == QStringLiteral("QuickPanel.qml")) {
@@ -4268,11 +4390,56 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                         QStringLiteral("                        onSystemMonitorRequested: root.source.openSystemMonitor()"),
                         QStringLiteral("                        onSystemMonitorRequested: root.source.openSystemMonitor()\n                        onExitShellRequested: Quickshell.execDetached([\"qs\", \"-c\", \"sekaipop\", \"ipc\", \"call\", \"shell\", \"exit\"])")
                     );
-                    // Ensure the bottom-centre Hot Edge strip sits on Overlay layer above Bar/Dock and
-                    // uses alpha=1/255 (visually invisible, 100% solid for Win32 DWM hover hit-testing).
+                    // Ensure the QuickPanel Hot Edge strip sits on Overlay layer above Bar/Dock,
+                    // uses alpha=1/255 (100% solid for Win32 DWM hover hit-testing), and yields
+                    // bottom-centre to bottom-right whenever bottom Dock Smart/Auto-hide is active
+                    // so neither feature ever collides at the bottom screen edge.
                     text.replace(
-                        QStringLiteral("            visible: root.hotEdge\n            color: \"transparent\"\n            exclusionMode: ExclusionMode.Ignore"),
-                        QStringLiteral("            visible: root.hotEdge\n            WlrLayershell.namespace: \"sekaipop-hotedge\"\n            WlrLayershell.layer: WlrLayer.Overlay\n            color: Qt.rgba(0, 0, 0, 1 / 255.0)\n            exclusionMode: ExclusionMode.Ignore")
+                        QStringLiteral("    property bool hotEdge: SettingsService.flag(\"panel.hotEdge\")"),
+                        QStringLiteral("    property bool hotEdge: SettingsService.flag(\"panel.hotEdge\")\n"
+                                       "    readonly property bool dockOwnsBottomCenter: SettingsService.flag(\"dock.visible\")\n"
+                                       "        && SettingsService.get(\"dock.position\") === \"bottom\"\n"
+                                       "        && BarPositionService.position !== \"bottom\"\n"
+                                       "        && !PinnedAppsService.dockPinned\n"
+                                       "        && (SettingsService.get(\"dock.hideMode\") !== \"off\" || SettingsService.flag(\"dock.autoHide\"))")
+                    );
+                    text.replace(
+                        QStringLiteral(
+                            "            visible: root.hotEdge\n"
+                            "            color: \"transparent\"\n"
+                            "            exclusionMode: ExclusionMode.Ignore\n"
+                            "            anchors {\n"
+                            "                bottom: true\n"
+                            "            }\n"
+                            "            implicitWidth: root.hotWidth\n"
+                            "            implicitHeight: root.hotHeight"
+                        ),
+                        QStringLiteral(
+                            "            visible: root.hotEdge\n"
+                            "            WlrLayershell.namespace: \"sekaipop-hotedge\"\n"
+                            "            WlrLayershell.layer: WlrLayer.Overlay\n"
+                            "            color: Qt.rgba(0, 0, 0, 1 / 255.0)\n"
+                            "            exclusionMode: ExclusionMode.Ignore\n"
+                            "            anchors {\n"
+                            "                bottom: true\n"
+                            "                right: root.dockOwnsBottomCenter\n"
+                            "            }\n"
+                            "            margins.right: root.dockOwnsBottomCenter ? 20 : 0\n"
+                            "            implicitWidth: root.dockOwnsBottomCenter ? Math.min(220, Math.max(100, Math.round((modelData ? modelData.width : 1280) * 0.15))) : root.hotWidth\n"
+                            "            implicitHeight: root.hotHeight"
+                        )
+                    );
+                }
+
+                if (fi.fileName() == QStringLiteral("SettingsPageGeneral.qml")) {
+                    text.replace(
+                        QStringLiteral("            detail: SettingsService.flag(\"panel.hotEdge\") ? \"Bottom centre\" : \"OFF\""),
+                        QStringLiteral("            detail: SettingsService.flag(\"panel.hotEdge\")\n"
+                                       "                ? ((SettingsService.flag(\"dock.visible\") && SettingsService.get(\"dock.position\") === \"bottom\"\n"
+                                       "                    && BarPositionService.position !== \"bottom\" && !PinnedAppsService.dockPinned\n"
+                                       "                    && (SettingsService.get(\"dock.hideMode\") !== \"off\" || SettingsService.flag(\"dock.autoHide\")))\n"
+                                       "                   ? \"Bottom right (yields centre to Dock)\" : \"Bottom centre\")\n"
+                                       "                : \"OFF\"")
                     );
                 }
 
@@ -5410,12 +5577,21 @@ QList<StagedSingletonInfo> stageSekaipopTree(const QString& sekaipopDir, const Q
                     );
                 }
 
-                // Show the bottom Dock on every monitor by default on Windows multi-monitor setups
-                // (user can still toggle off anytime in Settings -> Desktop -> Dock -> Dock on every monitor).
+                // Show the bottom Dock on every monitor by default on Windows multi-monitor setups,
+                // and default to Smart Hide with a slim 10% (~6 px) edge reveal strip so the Dock is
+                // always accessible over maximized apps without interfering with app controls.
                 if (fi.fileName() == QStringLiteral("SettingsService.qml")) {
                     text.replace(
                         QStringLiteral("\"dock.perMonitor\": false,"),
                         QStringLiteral("\"dock.perMonitor\": true,")
+                    );
+                    text.replace(
+                        QStringLiteral("\"dock.hideMode\": \"off\","),
+                        QStringLiteral("\"dock.hideMode\": \"smart\",")
+                    );
+                    text.replace(
+                        QStringLiteral("\"dock.hotZone\": 100,"),
+                        QStringLiteral("\"dock.hotZone\": 10,")
                     );
                 }
 
